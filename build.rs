@@ -187,6 +187,7 @@ fn maybe_make_cpython(repo_dir: &Path) {
 
         run(Command::new("../../Tools/wasm/wasi-env")
             .env("CONFIG_SITE", "../../Tools/wasm/config.site-wasm32-wasi")
+            .env("CFLAGS", "-fPIC")
             .current_dir(&cpython_wasi_dir)
             .args([
                 "../../configure",

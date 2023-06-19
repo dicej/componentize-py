@@ -444,9 +444,8 @@ pub fn componentize(
                 if code_entries_remaining == 0 {
                     let mut dispatch = Function::new([]);
 
-                    let dispatch_param_count = 4;
-                    for local in 0..dispatch_param_count {
-                        dispatch.instruction(&Ins::LocalGet(local));
+                    for local in 0..DISPATCH_CORE_PARAM_COUNT {
+                        dispatch.instruction(&Ins::LocalGet(u32::try_from(local).unwrap()));
                     }
                     dispatch.instruction(&Ins::CallIndirect {
                         ty: (old_type_count + new_import_count + summary.functions.len())

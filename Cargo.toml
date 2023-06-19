@@ -51,6 +51,7 @@ members = [
   "runtime",
   "shared",
   "test-generator",
+  "component-init"
 ]
 exclude = [
   "preview2"

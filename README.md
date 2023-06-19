@@ -26,7 +26,7 @@ pip install componentize-py
 
 ### Prerequisites
 
-- [WASI SDK](https://github.com/WebAssembly/wasi-sdk) v16 (later versions may work, but have not yet been tested)
+- [A temporary fork of WASI SDK](https://github.com/dicej/wasi-sdk)
     - Install this to `/opt/wasi-sdk`, or else specify an alternative location via the `WASI_SDK_PATH` environment variable
 - Tools needed to build [CPython](https://github.com/python/cpython) (e.g. Make, Clang, etc.)
 - [Rust](https://rustup.rs/) v1.68 or later, including the `wasm32-wasi` and `wasm32-unknown-unkown` targets
