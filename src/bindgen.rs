@@ -24,46 +24,6 @@ pub const DISPATCH_CORE_PARAM_COUNT: usize = DISPATCHABLE_CORE_PARAM_COUNT + 1;
 const DISCRIMINANT_FIELD_INDEX: i32 = 0;
 const PAYLOAD_FIELD_INDEX: i32 = 1;
 
-macro_rules! declare_enum {
-    ($name:ident { $( $variant:ident ),* } $list:ident) => {
-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-        pub enum $name {
-            $( $variant ),*
-        }
-
-        pub static $list: &[$name] = &[$( $name::$variant ),*];
-    }
-}
-
-declare_enum! {
-    Link {
-        Dispatch,
-        Free,
-        LowerI32,
-        LowerI64,
-        LowerF32,
-        LowerF64,
-        LowerChar,
-        LowerString,
-        GetField,
-        GetListLength,
-        GetListElement,
-        Allocate,
-        LiftI32,
-        LiftI64,
-        LiftF32,
-        LiftF64,
-        LiftChar,
-        LiftString,
-        Init,
-        MakeList,
-        ListAppend,
-        None,
-        GetBytes,
-        MakeBytes
-    } LINK_LIST
-}
-
 pub fn mem_arg(offset: u64, align: u32) -> MemArg {
     MemArg {
         offset,

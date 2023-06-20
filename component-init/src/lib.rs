@@ -22,11 +22,11 @@ const PAGE_SIZE_BYTES: i32 = 64 * 1024;
 const MAX_CONSECUTIVE_ZEROS: usize = 8;
 
 pub trait Invoker {
-    fn call_s32(&mut self, function: &str) -> i32;
-    fn call_s64(&mut self, function: &str) -> i64;
-    fn call_float32(&mut self, function: &str) -> f32;
-    fn call_float64(&mut self, function: &str) -> f64;
-    fn call_list_u8(&mut self, function: &str) -> Vec<u8>;
+    fn call_s32(&mut self, function: &str) -> Result<i32>;
+    fn call_s64(&mut self, function: &str) -> Result<i64>;
+    fn call_float32(&mut self, function: &str) -> Result<f32>;
+    fn call_float64(&mut self, function: &str) -> Result<f64>;
+    fn call_list_u8(&mut self, function: &str) -> Result<Vec<u8>>;
 }
 
 fn get_and_increment(n: &mut u32) -> u32 {
@@ -45,7 +45,7 @@ pub fn mem_arg(offset: u64, align: u32) -> MemArg {
 
 pub fn initialize(
     component: &[u8],
-    initialize: impl Fn(&[u8]) -> Result<Box<dyn Invoker>>,
+    initialize: impl FnOnce(&[u8]) -> Result<Box<dyn Invoker>>,
 ) -> Result<Vec<u8>> {
     // First, instrument the input component, validating that it conforms to certain rules and exposing the memory
     // and all mutable globals via synthesized function exports.
@@ -433,10 +433,10 @@ pub fn initialize(
                         Ok((
                             *global_index,
                             match ty {
-                                ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name)),
-                                ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name)),
-                                ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name)),
-                                ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name)),
+                                ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name)?),
+                                ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name)?),
+                                ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name)?),
+                                ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name)?),
                                 ValType::V128 => bail!("V128 not yet supported"),
                                 ValType::Ref(_) => bail!("reference types not supported"),
                             },

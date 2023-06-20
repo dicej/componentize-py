@@ -21,6 +21,11 @@ use {
     },
 };
 
+wit_bindgen::generate!({
+    world: "init",
+    path: "../wit/init.wit"
+});
+
 static EXPORTS: OnceCell<Vec<PyObject>> = OnceCell::new();
 static TYPES: OnceCell<Vec<Type>> = OnceCell::new();
 static ENVIRON: OnceCell<Py<PyMapping>> = OnceCell::new();
@@ -79,9 +84,9 @@ impl<T: std::error::Error + Send + Sync + 'static> From<T> for Anyhow {
     }
 }
 
-#[link(wasm_import_module = "componentize-py")]
+#[link(wasm_import_module = "env")]
 extern "C" {
-    #[cfg_attr(target_arch = "wasm32", link_name = "dispatch")]
+    #[cfg_attr(target_arch = "wasm32", link_name = "componentize-py#DispatchToHost")]
     fn dispatch(context: *const c_void, input: *const c_void, output: *mut c_void, index: u32);
 }
 
@@ -115,156 +120,156 @@ fn componentize_py_module(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(call_import, module)?)
 }
 
-fn do_init() -> Result<()> {
-    let symbols = fs::read(env::var("COMPONENTIZE_PY_SYMBOLS_PATH")?)?;
-    let symbols = bincode::deserialize::<Symbols>(&symbols)?;
+struct MyInit;
 
-    pyo3::append_to_inittab!(componentize_py_module);
+impl Init for MyInit {
+    fn init(app_name: String, symbols: Symbols) -> Result<()> {
+        pyo3::append_to_inittab!(componentize_py_module);
 
-    pyo3::prepare_freethreaded_python();
+        pyo3::prepare_freethreaded_python();
 
-    Python::with_gil(|py| {
-        let app = py.import(env::var("COMPONENTIZE_PY_APP_NAME")?.deref())?;
+        Python::with_gil(|py| {
+            let app = py.import(&app_name)?;
 
-        EXPORTS
-            .set(
-                symbols
-                    .exports
-                    .iter()
-                    .map(|function| {
-                        Ok(app
-                            .getattr(function.protocol.as_str())?
-                            .getattr(function.name.as_str())?
-                            .into())
-                    })
-                    .collect::<PyResult<_>>()?,
-            )
-            .unwrap();
+            EXPORTS
+                .set(
+                    symbols
+                        .exports
+                        .iter()
+                        .map(|function| {
+                            Ok(app
+                                .getattr(function.protocol.as_str())?
+                                .getattr(function.name.as_str())?
+                                .into())
+                        })
+                        .collect::<PyResult<_>>()?,
+                )
+                .unwrap();
 
-        TYPES
-            .set(
-                symbols
-                    .types
-                    .into_iter()
-                    .map(|ty| {
-                        Ok(match ty {
-                            shared::Type::Owned {
-                                kind,
-                                package,
-                                name,
-                            } => match kind {
-                                OwnedKind::Record { fields } => Type::Record {
-                                    constructor: py
-                                        .import(package.as_str())?
-                                        .getattr(name.as_str())?
-                                        .into(),
-                                    fields,
-                                },
-                                OwnedKind::Variant { cases } => {
-                                    let package = py.import(package.as_str())?;
+            TYPES
+                .set(
+                    symbols
+                        .types
+                        .into_iter()
+                        .map(|ty| {
+                            Ok(match ty {
+                                shared::Type::Owned {
+                                    kind,
+                                    package,
+                                    name,
+                                } => match kind {
+                                    OwnedKind::Record { fields } => Type::Record {
+                                        constructor: py
+                                            .import(package.as_str())?
+                                            .getattr(name.as_str())?
+                                            .into(),
+                                        fields,
+                                    },
+                                    OwnedKind::Variant { cases } => {
+                                        let package = py.import(package.as_str())?;
 
-                                    let cases = cases
-                                        .iter()
-                                        .map(|case| {
-                                            Ok(Case {
-                                                constructor: package
-                                                    .getattr(case.name.as_str())?
-                                                    .into(),
-                                                has_payload: case.has_payload,
+                                        let cases = cases
+                                            .iter()
+                                            .map(|case| {
+                                                Ok(Case {
+                                                    constructor: package
+                                                        .getattr(case.name.as_str())?
+                                                        .into(),
+                                                    has_payload: case.has_payload,
+                                                })
                                             })
-                                        })
-                                        .collect::<PyResult<Vec<_>>>()?;
+                                            .collect::<PyResult<Vec<_>>>()?;
 
-                                    let types_to_discriminants = PyDict::new(py);
-                                    for (index, case) in cases.iter().enumerate() {
-                                        types_to_discriminants
-                                            .set_item(&case.constructor, index)?;
-                                    }
+                                        let types_to_discriminants = PyDict::new(py);
+                                        for (index, case) in cases.iter().enumerate() {
+                                            types_to_discriminants
+                                                .set_item(&case.constructor, index)?;
+                                        }
 
-                                    Type::Variant {
-                                        cases,
-                                        types_to_discriminants: types_to_discriminants.into(),
-                                    }
-                                }
-                                OwnedKind::Enum(count) => Type::Enum {
-                                    constructor: py
-                                        .import(package.as_str())?
-                                        .getattr(name.as_str())?
-                                        .into(),
-                                    count,
-                                },
-                                OwnedKind::RawUnion { types } => {
-                                    let types_to_discriminants = PyDict::new(py);
-                                    let mut other_discriminant = None;
-                                    for (index, ty) in types.iter().enumerate() {
-                                        let ty = match ty {
-                                            RawUnionType::Int => Some(py.get_type::<PyInt>()),
-                                            RawUnionType::Float => Some(py.get_type::<PyFloat>()),
-                                            RawUnionType::Str => Some(py.get_type::<PyString>()),
-                                            RawUnionType::Other => None,
-                                        };
-
-                                        if let Some(ty) = ty {
-                                            types_to_discriminants.set_item(ty, index)?;
-                                        } else {
-                                            assert!(other_discriminant.is_none());
-                                            other_discriminant = Some(index);
+                                        Type::Variant {
+                                            cases,
+                                            types_to_discriminants: types_to_discriminants.into(),
                                         }
                                     }
+                                    OwnedKind::Enum(count) => Type::Enum {
+                                        constructor: py
+                                            .import(package.as_str())?
+                                            .getattr(name.as_str())?
+                                            .into(),
+                                        count,
+                                    },
+                                    OwnedKind::RawUnion { types } => {
+                                        let types_to_discriminants = PyDict::new(py);
+                                        let mut other_discriminant = None;
+                                        for (index, ty) in types.iter().enumerate() {
+                                            let ty = match ty {
+                                                RawUnionType::Int => Some(py.get_type::<PyInt>()),
+                                                RawUnionType::Float => {
+                                                    Some(py.get_type::<PyFloat>())
+                                                }
+                                                RawUnionType::Str => {
+                                                    Some(py.get_type::<PyString>())
+                                                }
+                                                RawUnionType::Other => None,
+                                            };
 
-                                    Type::RawUnion {
-                                        types_to_discriminants: types_to_discriminants.into(),
-                                        other_discriminant,
+                                            if let Some(ty) = ty {
+                                                types_to_discriminants.set_item(ty, index)?;
+                                            } else {
+                                                assert!(other_discriminant.is_none());
+                                                other_discriminant = Some(index);
+                                            }
+                                        }
+
+                                        Type::RawUnion {
+                                            types_to_discriminants: types_to_discriminants.into(),
+                                            other_discriminant,
+                                        }
                                     }
-                                }
-                                OwnedKind::Flags(u32_count) => Type::Flags {
-                                    constructor: py
-                                        .import(package.as_str())?
-                                        .getattr(name.as_str())?
-                                        .into(),
-                                    u32_count,
+                                    OwnedKind::Flags(u32_count) => Type::Flags {
+                                        constructor: py
+                                            .import(package.as_str())?
+                                            .getattr(name.as_str())?
+                                            .into(),
+                                        u32_count,
+                                    },
                                 },
-                            },
-                            shared::Type::Option => Type::Option,
-                            shared::Type::NestingOption => Type::NestingOption,
-                            shared::Type::Result => Type::Result,
-                            shared::Type::Tuple(length) => Type::Tuple(length),
+                                shared::Type::Option => Type::Option,
+                                shared::Type::NestingOption => Type::NestingOption,
+                                shared::Type::Result => Type::Result,
+                                shared::Type::Tuple(length) => Type::Tuple(length),
+                            })
                         })
-                    })
-                    .collect::<PyResult<_>>()?,
-            )
-            .unwrap();
+                        .collect::<PyResult<_>>()?,
+                )
+                .unwrap();
 
-        let types = py.import(symbols.types_package.as_str())?;
+            let types = py.import(symbols.types_package.as_str())?;
 
-        SOME_CONSTRUCTOR.set(types.getattr("Some")?.into()).unwrap();
-        OK_CONSTRUCTOR.set(types.getattr("Ok")?.into()).unwrap();
-        ERR_CONSTRUCTOR.set(types.getattr("Err")?.into()).unwrap();
+            SOME_CONSTRUCTOR.set(types.getattr("Some")?.into()).unwrap();
+            OK_CONSTRUCTOR.set(types.getattr("Ok")?.into()).unwrap();
+            ERR_CONSTRUCTOR.set(types.getattr("Err")?.into()).unwrap();
 
-        let environ = py
-            .import("os")?
-            .getattr("environ")?
-            .downcast::<PyMapping>()
-            .unwrap();
+            let environ = py
+                .import("os")?
+                .getattr("environ")?
+                .downcast::<PyMapping>()
+                .unwrap();
 
-        let keys = environ.keys()?;
+            let keys = environ.keys()?;
 
-        for i in 0..keys.len()? {
-            environ.del_item(keys.get_item(i)?)?;
-        }
+            for i in 0..keys.len()? {
+                environ.del_item(keys.get_item(i)?)?;
+            }
 
-        ENVIRON.set(environ.into()).unwrap();
+            ENVIRON.set(environ.into()).unwrap();
 
-        Ok(())
-    })
+            Ok(())
+        })
+    }
 }
 
-#[export_name = "wizer.initialize"]
-pub extern "C" fn init() {
-    run_ctors();
-
-    do_init().unwrap();
-}
+export_init!(MyInit);
 
 /// # Safety
 /// TODO

@@ -3,7 +3,6 @@
 use {
     anyhow::{Context, Error, Result},
     heck::ToSnakeCase,
-    once_cell::sync::Lazy,
     std::{
         collections::{hash_map::Entry, HashMap},
         env,
@@ -36,48 +35,82 @@ mod summary;
 mod test;
 mod util;
 
+wasmtime::bindgen!({
+    world: "init",
+    path: "wit/init.wit"
+});
+
 #[cfg(unix)]
 const NATIVE_PATH_DELIMITER: char = ':';
 
 #[cfg(windows)]
 const NATIVE_PATH_DELIMITER: char = ';';
 
-static WASI_TABLE: Lazy<Mutex<HashMap<u32, WasiCtx>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-
-struct WasiContext {
-    key: u32,
+struct Ctx {
+    wasi: WasiCtx,
+    table: Table,
 }
 
-impl WasiContext {
-    fn new(ctx: WasiCtx) -> Self {
-        let mut key = 0;
-        loop {
-            let mut table = WASI_TABLE.lock().unwrap();
-            match table.entry(key) {
-                Entry::Occupied(_) => {
-                    key += 1;
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(ctx);
-                    break Self { key };
-                }
-            }
-        }
+impl WasiView for Ctx {
+    fn ctx(&self) -> &WasiCtx {
+        &self.wasi
+    }
+    fn ctx_mut(&mut self) -> &mut WasiCtx {
+        &mut self.wasi
+    }
+    fn table(&self) -> &Table {
+        &self.table
+    }
+    fn table_mut(&mut self) -> &mut Table {
+        &mut self.table
     }
 }
 
-impl Drop for WasiContext {
-    fn drop(&mut self) {
-        WASI_TABLE.lock().unwrap().remove(&self.key);
-    }
+struct MyInvoker {
+    store: Store<Ctx>,
+    instance: Instance,
 }
 
-fn get_wasi(ctx: &mut Option<WasiCtx>, key: u32) -> &mut WasiCtx {
-    if ctx.is_none() {
-        *ctx = WASI_TABLE.lock().unwrap().remove(&key);
+impl Invoker for MyInvoker {
+    fn call_s32(&mut self, function: &str) -> Result<i32> {
+        let func = instance
+            .exports(&mut store)
+            .root()
+            .typed_func::<(), (i32,)>(function)?;
+        func.call_async(&mut store, ()).await?.0
     }
 
-    ctx.as_mut().unwrap()
+    fn call_s64(&mut self, function: &str) -> Result<i64> {
+        let func = instance
+            .exports(&mut store)
+            .root()
+            .typed_func::<(), (i64,)>(function)?;
+        func.call_async(&mut store, ()).await?.0
+    }
+
+    fn call_float32(&mut self, function: &str) -> Result<f32> {
+        let func = instance
+            .exports(&mut store)
+            .root()
+            .typed_func::<(), (f32,)>(function)?;
+        func.call_async(&mut store, ()).await?.0
+    }
+
+    fn call_float64(&mut self, function: &str) -> Result<f64> {
+        let func = instance
+            .exports(&mut store)
+            .root()
+            .typed_func::<(), (f64,)>(function)?;
+        func.call_async(&mut store, ()).await?.0
+    }
+
+    fn call_list_u8(&mut self, function: &str) -> Result<Vec<u8>> {
+        let func = instance
+            .exports(&mut store)
+            .root()
+            .typed_func::<(), (Vec<u8>,)>(function)?;
+        func.call_async(&mut store, ()).await?.0
+    }
 }
 
 fn open_dir(path: impl AsRef<Path>) -> Result<Dir> {
@@ -115,12 +148,57 @@ pub fn componentize(
 
     let (resolve, world) = parse_wit(wit_path, world)?;
     let summary = Summary::try_new(&resolve, world)?;
+    let symbols = summary.collect_symbols();
 
-    let symbols = tempfile::tempdir()?;
-    bincode::serialize_into(
-        &mut File::create(symbols.path().join("bin"))?,
-        &summary.collect_symbols(),
-    )?;
+    let mut linker = Linker::default()
+        .library(
+            "componentize-py-runtime.so",
+            &zstd::decode_all(Cursor::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/componentize-py-runtime.so.zst"
+            ))))?,
+        )?
+        .library(
+            "libc.so",
+            &zstd::decode_all(Cursor::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/libc.so.zst"
+            ))))?,
+        )?
+        .library(
+            "libc++.so",
+            &zstd::decode_all(Cursor::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/libc++.so.zst"
+            ))))?,
+        )?
+        .library(
+            "libc++abi.so",
+            &zstd::decode_all(Cursor::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/libc++abi.so.zst"
+            ))))?,
+        )?
+        .library(
+            "componentize-py-bindings.so",
+            make_bindings(&resolve, world, &summary),
+        )?;
+
+    if stub_wasi {
+        linker = linker.library("componentize-py-wasi-stub.so", make_wasi_stub_library())?;
+    } else {
+        linker = linker.adapter(
+            "wasi-snapshot-preview1",
+            &zstd::decode_all(Cursor::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/wasi_snapshot_preview1.wasm.zst"
+            ))))?,
+        )?;
+    }
+
+    // todo: add `--dl-openable` options for any .cpython-311-wasm32-wasi.so files found in `python_path`
+
+    let component = linker.encode()?;
 
     let generated_code = tempfile::tempdir()?;
     let world_dir = generated_code
@@ -148,9 +226,7 @@ pub fn componentize(
         .env("PYTHONUNBUFFERED", "1")?
         .env("COMPONENTIZE_PY_APP_NAME", app_name)?
         .env("PYTHONHOME", "/python")?
-        .env("COMPONENTIZE_PY_SYMBOLS_PATH", "/symbols/bin")?
-        .preopened_dir(open_dir(stdlib.path())?, "python")?
-        .preopened_dir(open_dir(symbols.path())?, "symbols")?;
+        .preopened_dir(open_dir(stdlib.path())?, "python")?;
 
     let mut count = 0;
     for (index, path) in python_path.split(NATIVE_PATH_DELIMITER).enumerate() {
@@ -163,38 +239,41 @@ pub fn componentize(
         .collect::<Vec<_>>()
         .join(":");
 
-    let context = WasiContext::new(
-        wasi.env("PYTHONPATH", &format!("/python:{python_path}"))?
-            .build(),
-    );
-    let key = context.key;
+    let mut table = Table::new();
+    let wasi = wasi
+        .env("PYTHONPATH", &format!("/python:{python_path}"))?
+        .build(&mut table);
 
-    let module = Wizer::new()
-        .wasm_bulk_memory(true)
-        .make_linker(Some(Rc::new(move |engine| {
-            let mut linker = Linker::new(engine);
-            wasmtime_wasi::add_to_linker(&mut linker, move |ctx| get_wasi(ctx, key))?;
-            Ok(linker)
-        })))?
-        .run(&zstd::decode_all(Cursor::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/runtime.wasm.zst"
-        ))))?)
-        .with_context(move || {
-            let mut buffer = String::new();
-            if stdout.rewind().is_ok() {
-                _ = stdout.read_to_string(&mut buffer);
-            }
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.async_support(true);
 
-            if stderr.rewind().is_ok() {
-                _ = stderr.read_to_string(&mut buffer);
-                _ = io::copy(&mut stderr, &mut io::stderr().lock());
-            }
+    let engine = Engine::new(&config)?;
 
-            buffer
-        })?;
+    let mut linker = Linker::new(&engine);
+    command::add_to_linker(&mut linker)?;
 
-    let component = componentize::componentize(&module, &resolve, world, &summary, stub_wasi)?;
+    let component = component_init::initialize(&component, move |instrumented| {
+        let (exports, instance) =
+            Exports::instantiate_async(&mut store, &Component::new(&engine, instrumented)?).await?;
+
+        exports.call_init(&mut store, symbols)??;
+
+        Box::new(MyInvoker { store, instance })
+    })
+    .with_context(move || {
+        let mut buffer = String::new();
+        if stdout.rewind().is_ok() {
+            _ = stdout.read_to_string(&mut buffer);
+        }
+
+        if stderr.rewind().is_ok() {
+            _ = stderr.read_to_string(&mut buffer);
+            _ = io::copy(&mut stderr, &mut io::stderr().lock());
+        }
+
+        buffer
+    })?;
 
     fs::write(output_path, component)?;
 
@@ -211,4 +290,71 @@ fn parse_wit(path: &Path, world: Option<&str>) -> Result<(Resolve, WorldId)> {
     };
     let world = resolve.select_world(pkg, world)?;
     Ok((resolve, world))
+}
+
+fn make_wasi_stub_code(name: &str) -> Vec<Ins> {
+    // For most stubs, we trap, but we need specialized stubs for the functions called by `wasi-libc`'s
+    // __wasm_call_ctors; otherwise we'd trap immediately upon calling any export.
+    match name {
+        "clock_time_get" => vec![
+            // *time = 0;
+            Ins::LocalGet(2),
+            Ins::I64Const(0),
+            Ins::I64Store(bindgen::mem_arg(0, 3)),
+            // return ERRNO_SUCCESS;
+            Ins::I32Const(0),
+        ],
+        "environ_sizes_get" => vec![
+            // *environc = 0;
+            Ins::LocalGet(0),
+            Ins::I32Const(0),
+            Ins::I32Store(bindgen::mem_arg(0, 2)),
+            // *environ_buf_size = 0;
+            Ins::LocalGet(1),
+            Ins::I32Const(0),
+            Ins::I32Store(bindgen::mem_arg(0, 2)),
+            // return ERRNO_SUCCESS;
+            Ins::I32Const(0),
+        ],
+        "fd_prestat_get" => vec![
+            // return ERRNO_BADF;
+            Ins::I32Const(8),
+        ],
+        _ => vec![Ins::Unreachable],
+    }
+}
+
+fn make_wasi_stub_library() -> Vec<u8> {
+    let signatures = [
+        (
+            "args_get",
+            &[ValType::I32, ValType::I32] as &[_],
+            ValType::I32,
+        ),
+        ("arg_sizes_get", &[ValType::I32, ValType::I32], ValType::I32),
+    ];
+
+    let mut types = TypeSection::new();
+    let mut exports = ExportSection::new();
+    let mut functions = FunctionSection::new();
+    let mut code = CodeSection::new();
+    for (offset, (name, params, result)) in signatures.iter().enumerate() {
+        let offset = u32::try_from(offset).unwrap();
+        types.function(params.iter().copied(), [*result]);
+        functions.function(offset);
+        let mut function = Function::new([]);
+        function.instruction(&Ins::Unreachable);
+        function.instruction(&Ins::End);
+        code.function(&function);
+        exports.export(name, ExportKind::Func, offset);
+    }
+
+    let mut module = Module::new();
+
+    module.section(&types);
+    module.section(&functions);
+    module.section(&exports);
+    module.section(&code);
+
+    module.finish()
 }
