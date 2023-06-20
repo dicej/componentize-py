@@ -51,7 +51,8 @@ members = [
   "runtime",
   "shared",
   "test-generator",
-  "component-init"
+  "component-init",
+  "wasm-convert",
 ]
 exclude = [
   "preview2"

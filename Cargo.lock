@@ -332,6 +332,7 @@ name = "component-init"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "wasm-convert",
  "wasm-encoder 0.29.0",
  "wasmparser 0.107.0",
 ]
@@ -2013,6 +2014,15 @@ dependencies = [
  "wasmtime",
  "wiggle",
  "windows-sys 0.45.0",
+]
+
+[[package]]
+name = "wasm-convert"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "wasm-encoder 0.29.0",
+ "wasmparser 0.107.0",
 ]
 
 [[package]]

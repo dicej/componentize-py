@@ -1,13 +1,17 @@
 use {
     anyhow::{bail, Result},
-    std::collections::{hash_map::Entry, HashMap},
+    std::{
+        collections::{hash_map::Entry, HashMap},
+        iter,
+    },
+    wasm_convert::{IntoConstExpr, IntoExportKind, IntoGlobalType, IntoMemoryType},
     wasm_encoder::{
         Alias, CanonicalFunctionSection, CanonicalOption, CodeSection, Component,
         ComponentAliasSection, ComponentExportKind, ComponentExportSection, ComponentExternName,
         ComponentTypeSection, ComponentValType, ConstExpr, DataSection, ExportKind, ExportSection,
         Function, FunctionSection, GlobalSection, GlobalType, ImportSection, InstanceSection,
-        Instruction as Ins, MemArg, Module, ModuleArg, ModuleSection, PrimitiveValType, RawSection,
-        TypeSection, ValType,
+        Instruction as Ins, MemArg, MemoryType, Module, ModuleArg, ModuleSection, PrimitiveValType,
+        RawSection, TypeSection, ValType,
     },
     wasmparser::{
         ComponentAlias, Encoding, ExternalKind, Instance, Operator, Parser, Payload, TypeRef,
@@ -18,11 +22,11 @@ const PAGE_SIZE_BYTES: i32 = 64 * 1024;
 const MAX_CONSECUTIVE_ZEROS: usize = 8;
 
 pub trait Invoker {
-    fn call_s32(&self, function: &str) -> i32;
-    fn call_s64(&self, function: &str) -> i64;
-    fn call_float32(&self, function: &str) -> f32;
-    fn call_float64(&self, function: &str) -> f64;
-    fn call_list_u8(&self, function: &str) -> Vec<u8>;
+    fn call_s32(&mut self, function: &str) -> i32;
+    fn call_s64(&mut self, function: &str) -> i64;
+    fn call_float32(&mut self, function: &str) -> f32;
+    fn call_float64(&mut self, function: &str) -> f64;
+    fn call_list_u8(&mut self, function: &str) -> Vec<u8>;
 }
 
 fn get_and_increment(n: &mut u32) -> u32 {
@@ -54,14 +58,15 @@ pub fn initialize(
     // - Single memory
     // - Single table
     // - No runtime table operations
+    // - No reference type globals
     // - Each module instantiated at most once
     // - If a module exports a memory, a single module must export a mutable `__stack_pointer` global of type I32
     //
     // Note that we use `__stack_pointer` to allocate 8 bytes to store the canonical `list<u8>` representation of
     // memory.
 
-    let copy_component_section = |payload: &Payload, result: &mut Component, component: &[u8]| {
-        if let Some((id, range)) = payload.as_section() {
+    let copy_component_section = |section, component: &[u8], result: &mut Component| {
+        if let Some((id, range)) = section {
             result.section(&RawSection {
                 id,
                 data: &component[range],
@@ -69,8 +74,8 @@ pub fn initialize(
         }
     };
 
-    let copy_module_section = |payload: &Payload, result: &mut Module, module: &[u8]| {
-        if let Some((id, range)) = payload.as_section() {
+    let copy_module_section = |section, module: &[u8], result: &mut Module| {
+        if let Some((id, range)) = section {
             result.section(&RawSection {
                 id,
                 data: &module[range],
@@ -84,24 +89,23 @@ pub fn initialize(
     let mut type_count = 0;
     let mut memory_info = None;
     let mut saw_table = false;
-    let mut globals_to_export = HashMap::new();
+    let mut globals_to_export = HashMap::<_, HashMap<_, _>>::new();
     let mut instantiations = HashMap::new();
     let mut stack_pointer_exports = Vec::new();
     let mut instrumented_component = Component::new();
     for payload in Parser::new(0).parse_all(component) {
-        let copy = |payload, result| copy_component_section(payload, result, component);
         let payload = payload?;
+        let section = payload.as_section();
         match payload {
             Payload::Version { encoding, .. } => {
                 if !matches!(encoding, Encoding::Component) {
                     bail!("expected component; got {encoding:?}");
                 }
-                copy(&payload, &mut instrumented_component);
+                copy_component_section(section, component, &mut instrumented_component);
             }
 
             Payload::ModuleSection { parser, range } => {
                 let module = &component[range];
-                let copy = |payload, result| copy_module_section(payload, result, module);
                 let mut global_types = Vec::new();
                 let mut empty = HashMap::new();
                 let mut instrumented_module = Module::new();
@@ -109,6 +113,7 @@ pub fn initialize(
                 let mut global_count = 0;
                 for payload in parser.parse_all(module) {
                     let payload = payload?;
+                    let section = payload.as_section();
                     match payload {
                         Payload::ImportSection(reader) => {
                             for import in reader {
@@ -116,17 +121,17 @@ pub fn initialize(
                                     global_count += 1;
                                 }
                             }
-                            copy(&payload, &mut instrumented_module);
+                            copy_module_section(section, module, &mut instrumented_module);
                         }
 
                         Payload::TableSection(reader) => {
-                            for table in reader {
+                            for _ in reader {
                                 if saw_table {
                                     bail!("only one table allowed per component");
                                 }
                                 saw_table = true;
                             }
-                            copy(&payload, &mut instrumented_module);
+                            copy_module_section(section, module, &mut instrumented_module);
                         }
 
                         Payload::MemorySection(reader) => {
@@ -134,25 +139,29 @@ pub fn initialize(
                                 if memory_info.is_some() {
                                     bail!("only one memory allowed per component");
                                 }
-                                memory_info =
-                                    Some((module_index, "memory", IntoMemoryType(&memory?).into()));
+                                memory_info = Some((
+                                    module_index,
+                                    "memory",
+                                    MemoryType::from(IntoMemoryType(memory?)),
+                                ));
                             }
-                            copy(&payload, &mut instrumented_module);
+                            copy_module_section(section, module, &mut instrumented_module);
                         }
 
                         Payload::GlobalSection(reader) => {
                             for global in reader {
                                 let global = global?;
-                                global_types.push(IntoGlobalType(&global.ty).into());
+                                let ty = GlobalType::from(IntoGlobalType(global.ty));
+                                global_types.push(ty);
                                 let global_index = get_and_increment(&mut global_count);
                                 if global.ty.mutable {
                                     globals_to_export
                                         .entry(module_index)
                                         .or_default()
-                                        .insert(global_index, None);
+                                        .insert(global_index, (None, ty.val_type));
                                 }
                             }
-                            copy(&payload, &mut instrumented_module);
+                            copy_module_section(section, module, &mut instrumented_module);
                         }
 
                         Payload::ExportSection(reader) => {
@@ -160,7 +169,7 @@ pub fn initialize(
                             for export in reader {
                                 let export = export?;
                                 if let ExternalKind::Global = export.kind {
-                                    if let Some(name) = globals_to_export
+                                    if let Some((name, _)) = globals_to_export
                                         .get_mut(&module_index)
                                         .and_then(|map| map.get_mut(&export.index))
                                     {
@@ -169,7 +178,7 @@ pub fn initialize(
                                     if export.name == "__stack_pointer" {
                                         stack_pointer_exports.push((
                                             module_index,
-                                            global_types[export.index.into()],
+                                            global_types[usize::try_from(export.index).unwrap()],
                                         ));
                                     }
                                 }
@@ -180,13 +189,13 @@ pub fn initialize(
                                 );
                             }
 
-                            for (index, name) in globals_to_export
+                            for (index, (name, _)) in globals_to_export
                                 .get_mut(&module_index)
                                 .unwrap_or(&mut empty)
                             {
                                 if name.is_none() {
                                     let new_name = format!("component-init:{index}");
-                                    exports.export(&new_name, ExportKind::Global, index);
+                                    exports.export(&new_name, ExportKind::Global, *index);
                                     *name = Some(new_name);
                                 }
                             }
@@ -204,14 +213,17 @@ pub fn initialize(
                                     | Operator::TableSet { .. } => {
                                         bail!("table operations not allowed");
                                     }
+
+                                    _ => (),
                                 }
                             }
-                            copy(&payload, &mut instrumented_module);
+                            copy_module_section(section, module, &mut instrumented_module);
                         }
 
-                        _ => copy(&payload, &mut instrumented_module),
+                        _ => copy_module_section(section, module, &mut instrumented_module),
                     }
                 }
+                instrumented_component.section(&ModuleSection(&instrumented_module));
             }
 
             Payload::InstanceSection(reader) => {
@@ -227,7 +239,7 @@ pub fn initialize(
                         }
                     }
                 }
-                copy(&payload, &mut instrumented_component);
+                copy_component_section(section, component, &mut instrumented_component);
             }
 
             Payload::ComponentAliasSection(reader) => {
@@ -236,15 +248,17 @@ pub fn initialize(
                         core_function_count += 1;
                     }
                 }
+                copy_component_section(section, component, &mut instrumented_component);
             }
 
             Payload::ComponentTypeSection(reader) => {
-                for ty in reader {
+                for _ in reader {
                     type_count += 1;
                 }
+                copy_component_section(section, component, &mut instrumented_component);
             }
 
-            _ => copy(&payload, &mut instrumented_component),
+            _ => copy_component_section(section, component, &mut instrumented_component),
         }
     }
 
@@ -259,13 +273,13 @@ pub fn initialize(
     let mut component_exports = ComponentExportSection::new();
     for (module_index, globals_to_export) in &globals_to_export {
         for (global_index, (name, ty)) in globals_to_export {
-            let offset = u32::try_from(types.len()).unwrap();
-            types.function([], [ty]);
+            let offset = types.len();
+            types.function([], [*ty]);
             imports.import(
                 &module_index.to_string(),
-                &name.unwrap(),
+                name.as_deref().unwrap(),
                 GlobalType {
-                    val_type: ty,
+                    val_type: *ty,
                     mutable: true,
                 },
             );
@@ -281,12 +295,17 @@ pub fn initialize(
                 kind: ComponentExportKind::Func,
                 name: &export_name,
             });
-            component_types.function().params([]).result(match ty {
-                ValType::I32 => PrimitiveValType::S32,
-                ValType::I64 => PrimitiveValType::S64,
-                ValType::F32 => PrimitiveValType::Float32,
-                ValType::F64 => PrimitiveValType::Float64,
-            });
+            component_types
+                .function()
+                .params(iter::empty::<(_, ComponentValType)>())
+                .result(match ty {
+                    ValType::I32 => PrimitiveValType::S32,
+                    ValType::I64 => PrimitiveValType::S64,
+                    ValType::F32 => PrimitiveValType::Float32,
+                    ValType::F64 => PrimitiveValType::Float64,
+                    ValType::V128 => bail!("V128 not yet supported"),
+                    ValType::Ref(_) => bail!("reference types not supported"),
+                });
             lifts.lift(
                 core_function_count + offset,
                 type_count + offset,
@@ -302,7 +321,7 @@ pub fn initialize(
     }
 
     if let Some((module_index, name, ty)) = memory_info {
-        let stack_module_index = match &stack_pointer_exports {
+        let stack_module_index = match stack_pointer_exports.as_slice() {
             [(
                 index,
                 GlobalType {
@@ -316,7 +335,7 @@ pub fn initialize(
                  exports a mutable `__stack_pointer` global of type I32"
             ),
         };
-        let offset = u32::try_from(types.len()).unwrap();
+        let offset = types.len();
         types.function([], [ValType::I32]);
         imports.import(&module_index.to_string(), name, ty);
         imports.import(
@@ -355,7 +374,7 @@ pub fn initialize(
         component_types.defined_type().list(PrimitiveValType::U8);
         component_types
             .function()
-            .params([])
+            .params(iter::empty::<(_, ComponentValType)>())
             .result(ComponentValType::Type(offset));
         lifts.lift(
             core_function_count + offset,
@@ -400,28 +419,33 @@ pub fn initialize(
     // Next, invoke the provided `initialize` function, which will return a trait object through which we can
     // invoke the functions we added above to capture the state of the initialized instance.
 
-    let invoker = initialize(&instrumented_component.finish())?;
+    let mut invoker = initialize(&instrumented_component.finish())?;
 
-    let global_values = globals_to_export
+    let mut global_values = globals_to_export
         .iter()
         .map(|(module_index, globals_to_export)| {
-            (
-                module_index,
+            Ok((
+                *module_index,
                 globals_to_export
                     .iter()
                     .map(|(global_index, (_, ty))| {
                         let name = &format!("component-init-get-{module_index}-{global_index}");
-                        match ty {
-                            ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name)),
-                            ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name)),
-                            ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name)),
-                            ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name)),
-                        }
+                        Ok((
+                            *global_index,
+                            match ty {
+                                ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name)),
+                                ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name)),
+                                ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name)),
+                                ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name)),
+                                ValType::V128 => bail!("V128 not yet supported"),
+                                ValType::Ref(_) => bail!("reference types not supported"),
+                            },
+                        ))
                     })
-                    .collect::<HashMap<_, _>>(),
-            )
+                    .collect::<Result<HashMap<_, _>>>()?,
+            ))
         })
-        .collect::<HashMap<_, _>>();
+        .collect::<Result<HashMap<_, _>>>()?;
 
     let memory_value = memory_info.map(|_| invoker.call_list_u8("component-init-get-memory"));
 
@@ -432,18 +456,18 @@ pub fn initialize(
     let mut initialized_component = Component::new();
     let mut module_count = 0;
     for payload in Parser::new(0).parse_all(component) {
-        let copy = |payload, result| copy_component_section(payload, result, component);
         let payload = payload?;
+        let section = payload.as_section();
         match payload {
             Payload::ModuleSection { parser, range } => {
                 let module = &component[range];
-                let copy = |payload, result| copy_module_section(payload, result, module);
                 let mut initialized_module = Module::new();
                 let module_index = get_and_increment(&mut module_count);
-                let global_values = global_values.get(module_index);
+                let mut global_values = global_values.remove(&module_index);
                 let mut global_count = 0;
                 for payload in parser.parse_all(module) {
                     let payload = payload?;
+                    let section = payload.as_section();
                     match payload {
                         Payload::ImportSection(reader) => {
                             for import in reader {
@@ -451,18 +475,22 @@ pub fn initialize(
                                     global_count += 1;
                                 }
                             }
-                            copy(&payload, &mut initialized_module);
+                            copy_module_section(section, module, &mut initialized_module);
                         }
 
                         Payload::GlobalSection(reader) => {
-                            let globals = GlobalSection::new();
+                            let mut globals = GlobalSection::new();
                             for global in reader {
                                 let global = global?;
                                 let global_index = get_and_increment(&mut global_count);
                                 globals.global(
                                     IntoGlobalType(global.ty).into(),
-                                    if global.ty.mutable {
-                                        global_values.unwrap().get(global_index).unwrap()
+                                    &if global.ty.mutable {
+                                        global_values
+                                            .as_mut()
+                                            .unwrap()
+                                            .remove(&global_index)
+                                            .unwrap()
                                     } else {
                                         IntoConstExpr(global.init_expr).into()
                                     },
@@ -473,24 +501,24 @@ pub fn initialize(
 
                         Payload::DataSection(_) | Payload::StartSection { .. } => (),
 
-                        _ => copy(&payload, &mut initialized_module),
+                        _ => copy_module_section(section, module, &mut initialized_module),
                     }
                 }
 
                 if matches!(memory_info, Some((index, ..)) if index == module_index) {
-                    let value = memory_value.unwrap();
+                    let value = memory_value.as_deref().unwrap();
                     let mut data = DataSection::new();
                     for (start, len) in Segments::new(value) {
                         data.active(
                             0,
                             &ConstExpr::i32_const(start.try_into().unwrap()),
-                            &value[start..][..len],
+                            value[start..][..len].iter().copied(),
                         );
                     }
                 }
             }
 
-            _ => copy(&payload, &mut instrumented_component),
+            _ => copy_component_section(section, component, &mut initialized_component),
         }
     }
 
@@ -512,9 +540,9 @@ impl<'a> Iterator for Segments<'a> {
     type Item = (usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let zero_count = 0;
-        let start = 0;
-        let length = 0;
+        let mut zero_count = 0;
+        let mut start = 0;
+        let mut length = 0;
         for (index, value) in self.bytes[self.offset..].iter().enumerate() {
             if *value == 0 {
                 zero_count += 1;

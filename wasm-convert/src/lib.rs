@@ -7,6 +7,34 @@ use {
     wasmparser::{BinaryReader, ExternalKind, TypeRef, VisitOperator},
 };
 
+pub struct IntoConstExpr<'a>(pub wasmparser::ConstExpr<'a>);
+
+impl<'a> From<IntoConstExpr<'a>> for ConstExpr {
+    fn from(val: IntoConstExpr) -> Self {
+        let mut reader = val.0.get_binary_reader();
+        ConstExpr::raw(
+            reader
+                .read_bytes(reader.bytes_remaining())
+                .unwrap()
+                .iter()
+                .copied(),
+        )
+    }
+}
+
+pub struct IntoMemoryType(pub wasmparser::MemoryType);
+
+impl From<IntoMemoryType> for MemoryType {
+    fn from(val: IntoMemoryType) -> Self {
+        MemoryType {
+            memory64: val.0.memory64,
+            shared: val.0.shared,
+            minimum: val.0.initial,
+            maximum: val.0.maximum,
+        }
+    }
+}
+
 pub struct IntoGlobalType(pub wasmparser::GlobalType);
 
 impl From<IntoGlobalType> for GlobalType {
@@ -59,9 +87,17 @@ pub struct IntoHeapType(pub wasmparser::HeapType);
 impl From<IntoHeapType> for HeapType {
     fn from(val: IntoHeapType) -> Self {
         match val.0 {
+            wasmparser::HeapType::Indexed(index) => HeapType::Indexed(index),
             wasmparser::HeapType::Func => HeapType::Func,
             wasmparser::HeapType::Extern => HeapType::Extern,
-            wasmparser::HeapType::TypedFunc(index) => HeapType::TypedFunc(index.into()),
+            wasmparser::HeapType::Any => HeapType::Any,
+            wasmparser::HeapType::None => HeapType::None,
+            wasmparser::HeapType::NoExtern => HeapType::NoExtern,
+            wasmparser::HeapType::NoFunc => HeapType::NoFunc,
+            wasmparser::HeapType::Eq => HeapType::Eq,
+            wasmparser::HeapType::Struct => HeapType::Struct,
+            wasmparser::HeapType::Array => HeapType::Array,
+            wasmparser::HeapType::I31 => HeapType::I31,
         }
     }
 }
@@ -71,8 +107,8 @@ pub struct IntoRefType(pub wasmparser::RefType);
 impl From<IntoRefType> for RefType {
     fn from(val: IntoRefType) -> Self {
         RefType {
-            nullable: val.0.nullable,
-            heap_type: IntoHeapType(val.0.heap_type).into(),
+            nullable: val.0.is_nullable(),
+            heap_type: IntoHeapType(val.0.heap_type()).into(),
         }
     }
 }
