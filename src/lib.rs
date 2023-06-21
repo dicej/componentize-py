@@ -162,10 +162,18 @@ pub async fn componentize(
 
     let mut linker = wit_component::Linker::default()
         .library(
-            "componentize-py-runtime.so",
+            "libcomponentize_py_runtime.so",
             &zstd::decode_all(Cursor::new(include_bytes!(concat!(
                 env!("OUT_DIR"),
-                "/componentize-py-runtime.so.zst"
+                "/libcomponentize_py_runtime.so.zst"
+            ))))?,
+            false,
+        )?
+        .library(
+            "libpython3.11.so",
+            &zstd::decode_all(Cursor::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/libpython3.11.so.zst"
             ))))?,
             false,
         )?
@@ -194,14 +202,14 @@ pub async fn componentize(
             false,
         )?
         .library(
-            "componentize-py-bindings.so",
+            "libcomponentize_py_bindings.so",
             &bindings::make_bindings(&resolve, world, &summary)?,
             false,
         )?;
 
     if stub_wasi {
         linker = linker.library(
-            "componentize-py-wasi-stub.so",
+            "libcomponentize_py_wasi_stub.so",
             &bindings::make_wasi_stub_library(),
             false,
         )?;

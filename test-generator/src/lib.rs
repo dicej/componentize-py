@@ -22,6 +22,8 @@ const MAX_PARAM_COUNT: usize = 12;
 const MAX_FLAG_COUNT: u32 = 100;
 const MAX_ENUM_COUNT: u32 = 100;
 
+static PREFIX: &str = "componentize_py::test::echoes_generated";
+
 #[derive(Clone, Debug)]
 enum Type {
     Bool,
@@ -114,36 +116,6 @@ fn union_case_names(types: &[Type]) -> Vec<String> {
     }
 
     names
-}
-
-fn borrows(ty: &Type) -> bool {
-    match ty {
-        Type::Bool
-        | Type::U8
-        | Type::S8
-        | Type::U16
-        | Type::S16
-        | Type::U32
-        | Type::S32
-        | Type::U64
-        | Type::S64
-        | Type::Float32
-        | Type::Float64
-        | Type::Char
-        | Type::Flags { .. }
-        | Type::Enum { .. } => false,
-        Type::String | Type::List(_) => true,
-        Type::Record { fields, .. } | Type::Tuple(fields) => fields.iter().any(borrows),
-        Type::Variant { cases, .. } => cases
-            .iter()
-            .any(|ty| ty.as_ref().map(borrows).unwrap_or(false)),
-        Type::Union { cases, .. } => cases.iter().any(borrows),
-        Type::Option(ty) => borrows(ty),
-        Type::Result { ok, err } => {
-            ok.as_ref().map(|ty| borrows(ty)).unwrap_or(false)
-                || err.as_ref().map(|ty| borrows(ty)).unwrap_or(false)
-        }
-    }
 }
 
 fn any_type(max_size: usize, next_id: Rc<Cell<usize>>) -> impl Strategy<Value = Type> {
@@ -389,7 +361,7 @@ fn wit_type_name(wit: &mut String, ty: &Type) -> String {
     }
 }
 
-fn rust_type_name(module: &str, ty: &Type) -> String {
+fn rust_type_name(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".into(),
         Type::U8 => "u8".into(),
@@ -405,53 +377,44 @@ fn rust_type_name(module: &str, ty: &Type) -> String {
         Type::Char => "char".into(),
         Type::String => "String".into(),
         Type::Record { id, .. } => {
-            format!(
-                "{module}::Record{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            )
+            format!("{PREFIX}::Record{id}Type")
         }
         Type::Variant { id, .. } => {
-            format!(
-                "{module}::Variant{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            )
+            format!("{PREFIX}::Variant{id}Type")
         }
         Type::Flags { id, .. } => {
-            format!("{module}::Flags{id}Type")
+            format!("{PREFIX}::Flags{id}Type")
         }
         Type::Enum { id, .. } => {
-            format!("{module}::Enum{id}Type")
+            format!("{PREFIX}::Enum{id}Type")
         }
         Type::Union { id, .. } => {
-            format!(
-                "{module}::Union{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            )
+            format!("{PREFIX}::Union{id}Type")
         }
         Type::Option(ty) => {
-            format!("Option<{}>", rust_type_name(module, ty))
+            format!("Option<{}>", rust_type_name(ty))
         }
         Type::Result { ok, err } => {
             let ok = ok
                 .as_ref()
-                .map(|ty| rust_type_name(module, ty))
+                .map(|ty| rust_type_name(ty))
                 .unwrap_or_else(|| "()".to_owned());
             let err = err
                 .as_ref()
-                .map(|ty| rust_type_name(module, ty))
+                .map(|ty| rust_type_name(ty))
                 .unwrap_or_else(|| "()".to_owned());
             format!("Result<{ok}, {err}>")
         }
         Type::Tuple(types) => {
             let types = types
                 .iter()
-                .map(|ty| format!("{},", rust_type_name(module, ty)))
+                .map(|ty| format!("{},", rust_type_name(ty)))
                 .collect::<Vec<_>>()
                 .join(" ");
             format!("({types})")
         }
         Type::List(ty) => {
-            format!("Vec<{}>", rust_type_name(module, ty))
+            format!("Vec<{}>", rust_type_name(ty))
         }
     }
 }
@@ -488,10 +451,7 @@ fn equality(a: &str, b: &str, ty: &Type) -> String {
         }
         Type::Variant { id, cases } => {
             assert!(!cases.is_empty());
-            let name = format!(
-                "exports::Variant{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            );
+            let name = format!("{PREFIX}::Variant{id}Type");
             let cases = cases
                 .iter()
                 .enumerate()
@@ -509,10 +469,7 @@ fn equality(a: &str, b: &str, ty: &Type) -> String {
         }
         Type::Union { id, cases } => {
             assert!(!cases.is_empty());
-            let name = format!(
-                "exports::Union{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            );
+            let name = format!("{PREFIX}::Union{id}Type");
             let cases = union_case_names(cases)
                 .iter()
                 .zip(cases)
@@ -577,7 +534,7 @@ fn strategy(ty: &Type, max_list_size: usize) -> String {
         Type::String => r#"proptest::string::string_regex(".*").unwrap()"#.into(),
         Type::Record { id, fields } => {
             if fields.is_empty() {
-                format!("Just(exports::Record{id}Type {{}})")
+                format!("Just({PREFIX}::Record{id}Type {{}})")
             } else {
                 let strategies = fields
                     .iter()
@@ -602,17 +559,13 @@ fn strategy(ty: &Type, max_list_size: usize) -> String {
 
                 format!(
                     "({strategies}).prop_map(|({params})| \
-                     exports::Record{id}Type{} {{ {inits} }})",
-                    if borrows(ty) { "Result" } else { "" }
+                     {PREFIX}::Record{id}Type {{ {inits} }})"
                 )
             }
         }
         Type::Variant { id, cases } => {
             assert!(!cases.is_empty());
-            let name = format!(
-                "exports::Variant{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            );
+            let name = format!("{PREFIX}::Variant{id}Type");
             let length = cases.len();
             let cases = cases
                 .iter()
@@ -630,7 +583,7 @@ fn strategy(ty: &Type, max_list_size: usize) -> String {
             format!("(0..{length}).prop_flat_map(move |index| match index {{ {cases}, _ => unreachable!() }})")
         }
         Type::Flags { id, count } => {
-            let name = format!("exports::Flags{id}Type");
+            let name = format!("{PREFIX}::Flags{id}Type");
 
             let flags = (0..*count)
                 .map(|index| {
@@ -645,7 +598,7 @@ fn strategy(ty: &Type, max_list_size: usize) -> String {
             )
         }
         Type::Enum { id, count } => {
-            let name = format!("exports::Enum{id}Type");
+            let name = format!("{PREFIX}::Enum{id}Type");
             let cases = (0..*count)
                 .map(|index| format!("index => {name}::C{index}"))
                 .collect::<Vec<_>>()
@@ -654,10 +607,7 @@ fn strategy(ty: &Type, max_list_size: usize) -> String {
         }
         Type::Union { id, cases } => {
             assert!(!cases.is_empty());
-            let name = format!(
-                "exports::Union{id}Type{}",
-                if borrows(ty) { "Result" } else { "" }
-            );
+            let name = format!("{PREFIX}::Union{id}Type");
             let length = cases.len();
             let cases = union_case_names(cases)
                 .iter()
@@ -801,10 +751,7 @@ pub fn generate() -> Result<()> {
 
         // Host function implementations
         {
-            let types = params
-                .iter()
-                .map(|ty| rust_type_name("imports", ty))
-                .collect::<Vec<_>>();
+            let types = params.iter().map(rust_type_name).collect::<Vec<_>>();
 
             let result_type = match types.len() {
                 0 => "()".to_owned(),
@@ -840,10 +787,7 @@ pub fn generate() -> Result<()> {
 
         // Typed function fields and inits
         {
-            let types = params
-                .iter()
-                .map(|ty| rust_type_name("exports", ty))
-                .collect::<Vec<_>>();
+            let types = params.iter().map(rust_type_name).collect::<Vec<_>>();
 
             let result_type = match types.len() {
                 0 => "()".to_owned(),
@@ -872,10 +816,7 @@ pub fn generate() -> Result<()> {
 
         // Test function implementations
         {
-            let types = params
-                .iter()
-                .map(|ty| rust_type_name("exports", ty))
-                .collect::<Vec<_>>();
+            let types = params.iter().map(rust_type_name).collect::<Vec<_>>();
 
             let args = (0..params.len())
                 .map(|index| format!("v.0.{index},"))
@@ -989,7 +930,7 @@ pub struct Exports {{
 }}
 
 #[async_trait]
-impl componentize_py::test::echoes_generated::Host for Ctx {{
+impl {PREFIX}::Host for Ctx {{
     {host_functions}
 }}
 
@@ -1001,7 +942,7 @@ impl super::Host for Host {{
 
     fn add_to_linker(linker: &mut Linker<Ctx>) -> Result<()> {{
         wasi::command::add_to_linker(&mut *linker)?;
-        componentize_py::test::echoes_generated::add_to_linker(linker, |ctx| ctx)?;
+        {PREFIX}::add_to_linker(linker, |ctx| ctx)?;
         Ok(())
     }}
 

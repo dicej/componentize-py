@@ -1,7 +1,7 @@
 #![deny(warnings)]
 
 use {
-    anyhow::{bail, Result},
+    anyhow::{anyhow, bail, Result},
     std::{
         env,
         fmt::Write as _,
@@ -46,7 +46,8 @@ fn stubs_for_clippy(out_dir: &Path) -> Result<()> {
     );
 
     let libraries = [
-        "componentize-py-runtime.so.zst",
+        "libcomponentize_py_runtime.so.zst",
+        "libpython3.11.so.zst",
         "libc.so.zst",
         "libc++.so.zst",
         "libc++abi.so.zst",
@@ -93,13 +94,17 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
 
     maybe_make_cpython(&repo_dir, &wasi_sdk);
 
+    let cpython_wasi_dir = repo_dir.join("cpython/builddir/wasi");
+
     make_pyo3_config(&repo_dir);
 
     let mut cmd = Command::new("cargo");
-    cmd.arg("build")
-        .current_dir("runtime")
+    cmd.current_dir("runtime")
+        .arg("+wasi")
+        .arg("build")
         .arg("--release")
         .arg("--target=wasm32-wasi")
+        .env("RUSTFLAGS", "-C relocation-model=pic")
         .env("CARGO_TARGET_DIR", out_dir)
         .env("PYO3_CONFIG_FILE", out_dir.join("pyo3-config.txt"));
 
@@ -107,63 +112,51 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
     assert!(status.success());
     println!("cargo:rerun-if-changed=runtime");
 
-    let runtime_path = out_dir.join("wasm32-wasi/release/libcomponentize_py_runtime.a");
+    let path = out_dir.join("wasm32-wasi/release/libcomponentize_py_runtime.a");
 
-    if runtime_path.exists() {
-        let library_path = out_dir.join("componentize-py-runtime.so");
+    if path.exists() {
+        let name = "libcomponentize_py_runtime.so";
 
         run(Command::new(wasi_sdk.join("bin/clang"))
             .arg("-shared")
             .arg("-o")
-            .arg(&library_path)
+            .arg(&out_dir.join(name))
             .arg("-Wl,--whole-archive")
-            .arg(&runtime_path)
-            .arg("-Wl,--no-whole-archive"));
+            .arg(&path)
+            .arg("-Wl,--no-whole-archive")
+            .arg(format!("-L{}", cpython_wasi_dir.to_str().unwrap()))
+            .arg("-lpython3.11"));
 
-        let mut encoder = Encoder::new(
-            File::create(out_dir.join("componentize-py-runtime.so.zst"))?,
-            ZSTD_COMPRESSION_LEVEL,
-        )?;
-        io::copy(&mut File::open(library_path)?, &mut encoder)?;
-        encoder.do_finish()?;
+        compress(out_dir, name, out_dir)?;
     } else {
-        bail!("no such file: {}", runtime_path.display())
+        bail!("no such file: {}", path.display())
     }
 
     let libraries = ["libc.so", "libc++.so", "libc++abi.so"];
 
     for library in libraries {
-        let path = wasi_sdk
-            .join("share/wasi-sysroot/lib/wasm32-wasi")
-            .join(library);
-
-        if path.exists() {
-            let mut encoder = Encoder::new(
-                File::create(out_dir.join(format!("{library}.zst")))?,
-                ZSTD_COMPRESSION_LEVEL,
-            )?;
-            io::copy(&mut File::open(path)?, &mut encoder)?;
-            encoder.do_finish()?;
-        } else {
-            bail!("no such file: {}", path.display())
-        }
+        compress(
+            &wasi_sdk.join("share/wasi-sysroot/lib/wasm32-wasi"),
+            library,
+            out_dir,
+        )?;
     }
 
-    let core_library_path = repo_dir.join("cpython/builddir/wasi/install/lib/python3.11");
+    compress(&cpython_wasi_dir, "libpython3.11.so", out_dir)?;
 
-    if core_library_path.exists() {
-        let copied_core_library_path = out_dir.join("python-lib.tar.zst");
+    let path = repo_dir.join("cpython/builddir/wasi/install/lib/python3.11");
 
+    if path.exists() {
         let mut builder = Builder::new(Encoder::new(
-            File::create(copied_core_library_path)?,
+            File::create(out_dir.join("python-lib.tar.zst"))?,
             ZSTD_COMPRESSION_LEVEL,
         )?);
 
-        add(&mut builder, &core_library_path, &core_library_path)?;
+        add(&mut builder, &path, &path)?;
 
         builder.into_inner()?.do_finish()?;
     } else {
-        bail!("no such directory: {}", core_library_path.display())
+        bail!("no such directory: {}", path.display())
     }
 
     let mut cmd = Command::new("cargo");
@@ -175,15 +168,31 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
 
     let status = cmd.status()?;
     assert!(status.success());
-    println!("cargo:rerun-if-changed=preview2");
+    println!("cargo:rerun-if-changed=wasmtime");
 
-    let adapter_path = out_dir.join("wasm32-unknown-unknown/release/wasi_snapshot_preview1.wasm");
-    let copied_adapter_path = out_dir.join("wasi_snapshot_preview1.wasm.zst");
-    let mut encoder = Encoder::new(File::create(copied_adapter_path)?, ZSTD_COMPRESSION_LEVEL)?;
-    io::copy(&mut File::open(adapter_path)?, &mut encoder)?;
-    encoder.do_finish()?;
+    compress(
+        &out_dir.join("wasm32-unknown-unknown/release"),
+        "wasi_preview1_component_adapter.wasm",
+        out_dir,
+    )?;
 
     Ok(())
+}
+
+fn compress(src_dir: &Path, name: &str, dst_dir: &Path) -> Result<()> {
+    let path = src_dir.join(name);
+
+    if path.exists() {
+        let mut encoder = Encoder::new(
+            File::create(dst_dir.join(format!("{name}.zst")))?,
+            ZSTD_COMPRESSION_LEVEL,
+        )?;
+        io::copy(&mut File::open(path)?, &mut encoder)?;
+        encoder.do_finish()?;
+        Ok(())
+    } else {
+        Err(anyhow!("no such file: {}", path.display()))
+    }
 }
 
 fn include(path: &Path) -> bool {

@@ -119,7 +119,7 @@ fn componentize_py_module(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(call_import, module)?)
 }
 
-fn do_init(app_name: String, symbols: Symbols) -> Result<()> {
+fn do_init(app_name: String, symbols: Symbols) -> Result<Option<Symbols>> {
     pyo3::append_to_inittab!(componentize_py_module);
 
     pyo3::prepare_freethreaded_python();
@@ -256,14 +256,14 @@ fn do_init(app_name: String, symbols: Symbols) -> Result<()> {
 
         ENVIRON.set(environ.into()).unwrap();
 
-        Ok(())
+        Ok(None)
     })
 }
 
 struct MyExports;
 
 impl Exports for MyExports {
-    fn init(app_name: String, symbols: Symbols) -> Result<(), String> {
+    fn init(app_name: String, symbols: Symbols) -> Result<Option<Symbols>, String> {
         do_init(app_name, symbols).map_err(|e| format!("{e:?}"))
     }
 }

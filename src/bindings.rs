@@ -1,6 +1,9 @@
 use {
     crate::{
-        bindgen::{self, FunctionBindgen, DISPATCH_CORE_PARAM_COUNT, IMPORT_SIGNATURES},
+        bindgen::{
+            self, FunctionBindgen, DISPATCHABLE_CORE_PARAM_COUNT, DISPATCH_CORE_PARAM_COUNT,
+            IMPORT_SIGNATURES,
+        },
         summary::{FunctionKind, Summary},
     },
     anyhow::Result,
@@ -73,7 +76,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
             mutable: true,
         }),
     );
-    global_names.push((table_base, "__stack_pointer".to_owned()));
+    global_names.push((stack_pointer, "__stack_pointer".to_owned()));
 
     imports.import(
         "env",
@@ -117,7 +120,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         })
         .collect::<IndexSet<_>>();
 
-    let mut import_index = 0;
+    let mut import_index = IMPORT_SIGNATURES.len();
     let mut dispatch_index = 0;
     for (index, function) in summary.functions.iter().enumerate() {
         let offset = types.len();
@@ -185,20 +188,27 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
 
     {
         // dispatch export
-        let offset = types.len();
+        let dispatch_offset = types.len();
         types.function([ValType::I32; DISPATCH_CORE_PARAM_COUNT], []);
+        let dispatchable_offset = types.len();
+        types.function([ValType::I32; DISPATCHABLE_CORE_PARAM_COUNT], []);
+        functions.function(dispatch_offset);
+        let name = "componentize-py#DispatchToHost";
+        function_names.push((dispatch_offset, name.to_owned()));
         let mut dispatch = Function::new([]);
 
         for local in 0..DISPATCH_CORE_PARAM_COUNT {
             dispatch.instruction(&Ins::LocalGet(u32::try_from(local).unwrap()));
         }
         dispatch.instruction(&Ins::CallIndirect {
-            ty: offset,
+            ty: dispatchable_offset,
             table: 0,
         });
         dispatch.instruction(&Ins::End);
 
         code.function(&dispatch);
+
+        exports.export(name, ExportKind::Func, dispatch_offset);
     }
 
     let mut elements = ElementSection::new();
@@ -256,7 +266,13 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         )?),
     });
 
-    Ok(result.finish())
+    let result = result.finish();
+
+    std::fs::write("/tmp/module.wasm", &result)?;
+
+    wasmparser::validate(&result)?;
+
+    Ok(result)
 }
 
 fn make_wasi_stub_code(name: &str) -> Vec<Ins> {
@@ -320,12 +336,14 @@ pub fn make_wasi_stub_library() -> Vec<u8> {
         exports.export(name, ExportKind::Func, offset);
     }
 
-    let mut module = Module::new();
+    let mut result = Module::new();
 
-    module.section(&types);
-    module.section(&functions);
-    module.section(&exports);
-    module.section(&code);
+    result.section(&types);
+    result.section(&functions);
+    result.section(&exports);
+    result.section(&code);
 
-    module.finish()
+    let result = result.finish();
+    wasmparser::validate(&result).expect("module should be valid");
+    result
 }

@@ -27,99 +27,100 @@ const PAYLOAD_FIELD_INDEX: i32 = 1;
 
 pub static IMPORT_SIGNATURES: &[(&str, &[ValType], &[ValType])] = &[
     (
-        "componentize_py#Dispatch",
+        "componentize-py#Dispatch",
         &[ValType::I32; 7] as &[_],
         &[] as &[_],
     ),
     (
-        "componentize_py#Allocate",
+        "componentize-py#Allocate",
         &[ValType::I32; 2],
         &[ValType::I32],
     ),
-    ("componentize_py#Free", &[ValType::I32; 3], &[]),
+    ("componentize-py#Free", &[ValType::I32; 3], &[]),
     (
-        "componentize_py#LowerI32",
+        "componentize-py#LowerI32",
         &[ValType::I32; 2],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LowerI64",
+        "componentize-py#LowerI64",
         &[ValType::I32; 2],
         &[ValType::I64],
     ),
     (
-        "componentize_py#LowerF32",
+        "componentize-py#LowerF32",
         &[ValType::I32; 2],
         &[ValType::F32],
     ),
     (
-        "componentize_py#LowerF64",
+        "componentize-py#LowerF64",
         &[ValType::I32; 2],
         &[ValType::F64],
     ),
     (
-        "componentize_py#LowerChar",
+        "componentize-py#LowerChar",
         &[ValType::I32; 2],
         &[ValType::I32],
     ),
-    ("componentize_py#LowerString", &[ValType::I32; 3], &[]),
+    ("componentize-py#LowerString", &[ValType::I32; 3], &[]),
     (
-        "componentize_py#GetField",
+        "componentize-py#GetField",
         &[ValType::I32; 4],
         &[ValType::I32],
     ),
     (
-        "componentize_py#GetListLength",
+        "componentize-py#GetListLength",
         &[ValType::I32; 2],
         &[ValType::I32],
     ),
     (
-        "componentize_py#GetListElement",
+        "componentize-py#GetListElement",
         &[ValType::I32; 3],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LiftI32",
+        "componentize-py#LiftI32",
         &[ValType::I32; 2],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LiftI64",
+        "componentize-py#LiftI64",
         &[ValType::I32, ValType::I64],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LiftF32",
+        "componentize-py#LiftF32",
         &[ValType::I32, ValType::F32],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LiftF64",
+        "componentize-py#LiftF64",
         &[ValType::I32, ValType::F64],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LiftChar",
+        "componentize-py#LiftChar",
         &[ValType::I32; 2],
         &[ValType::I32],
     ),
     (
-        "componentize_py#LiftString",
+        "componentize-py#LiftString",
         &[ValType::I32; 3],
         &[ValType::I32],
     ),
-    ("componentize_py#MakeList", &[ValType::I32], &[ValType::I32]),
-    ("componentize_py#ListAppend", &[ValType::I32; 3], &[]),
-    ("componentize_py#None", &[ValType::I32], &[ValType::I32]),
-    ("componentize_py#GetBytes", &[ValType::I32; 4], &[]),
+    ("componentize-py#MakeList", &[ValType::I32], &[ValType::I32]),
+    ("componentize-py#ListAppend", &[ValType::I32; 3], &[]),
+    ("componentize-py#None", &[ValType::I32], &[ValType::I32]),
+    ("componentize-py#Init", &[ValType::I32; 4], &[ValType::I32]),
+    ("componentize-py#GetBytes", &[ValType::I32; 4], &[]),
     (
-        "componentize_py#MakeBytes",
+        "componentize-py#MakeBytes",
         &[ValType::I32; 3],
         &[ValType::I32],
     ),
 ];
 
-static IMPORTS: Lazy<HashMap<&'static str, u32>> = Lazy::new(|| {
+static IMPORTS: Lazy<HashMap<&str, u32>> = Lazy::new(|| {
     IMPORT_SIGNATURES
         .iter()
         .enumerate()
