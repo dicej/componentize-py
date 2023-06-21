@@ -28,6 +28,7 @@ fn main() -> Result<()> {
 
     if matches!(env::var("CARGO_CFG_FEATURE").as_deref(), Ok("cargo-clippy"))
         || env::var("CLIPPY_ARGS").is_ok()
+        || env::var("CARGO_EXPAND_NO_RUN_NIGHTLY").is_ok()
     {
         stubs_for_clippy(&out_dir)
     } else {
@@ -46,9 +47,9 @@ fn stubs_for_clippy(out_dir: &Path) -> Result<()> {
 
     let libraries = [
         "componentize-py-runtime.so.zst",
-        "libc.so",
-        "libc++.so",
-        "libc++abi.so",
+        "libc.so.zst",
+        "libc++.so.zst",
+        "libc++abi.so.zst",
     ];
 
     for library in libraries {
@@ -88,7 +89,7 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
     let repo_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
 
     let wasi_sdk =
-        PathBuf::from(env::var_os("WASI_SDK_PATH").unwrap_or_else(OsString::from("/opt/wasi-sdk")));
+        PathBuf::from(env::var_os("WASI_SDK_PATH").unwrap_or_else(|| "/opt/wasi-sdk".into()));
 
     maybe_make_cpython(&repo_dir, &wasi_sdk);
 
@@ -111,7 +112,7 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
     if runtime_path.exists() {
         let library_path = out_dir.join("componentize-py-runtime.so");
 
-        run(Command::new(wasi_sdk.join("/bin/clang"))
+        run(Command::new(wasi_sdk.join("bin/clang"))
             .arg("-shared")
             .arg("-o")
             .arg(&library_path)
@@ -133,7 +134,7 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
 
     for library in libraries {
         let path = wasi_sdk
-            .join("share/wasi-sysroot/lib/wasm32-wasi/")
+            .join("share/wasi-sysroot/lib/wasm32-wasi")
             .join(library);
 
         if path.exists() {
@@ -247,11 +248,11 @@ fn maybe_make_cpython(repo_dir: &Path, wasi_sdk: &Path) {
                 ]));
 
             run(Command::new("make")
-                .current_dir(cpython_wasi_dir)
+                .current_dir(&cpython_wasi_dir)
                 .arg("install"));
         }
 
-        run(Command::new(wasi_sdk.join("/bin/clang"))
+        run(Command::new(wasi_sdk.join("bin/clang"))
             .arg("-shared")
             .arg("-o")
             .arg(cpython_wasi_dir.join("libpython3.11.so"))

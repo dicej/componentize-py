@@ -1,112 +1,21 @@
 use {
     crate::{
-        bindgen::{self, FunctionBindgen, DISPATCH_CORE_PARAM_COUNT, LINK_LIST},
-        convert::{
-            self, IntoEntityType, IntoExportKind, IntoRefType, IntoTableType, IntoValType,
-            MyElements,
-        },
+        bindgen::{self, FunctionBindgen, DISPATCH_CORE_PARAM_COUNT, IMPORT_SIGNATURES},
         summary::{FunctionKind, Summary},
     },
-    anyhow::{bail, Result},
+    anyhow::Result,
     indexmap::IndexSet,
-    std::{cmp::Ordering, collections::HashMap, env, io::Cursor},
+    std::borrow::Cow,
     wasm_encoder::{
         CodeSection, ConstExpr, CustomSection, ElementSection, Elements, Encode, EntityType,
-        ExportKind, ExportSection, Function, FunctionSection, HeapType, ImportSection,
-        Instruction as Ins, Module, RawSection, RefType, TableSection, TableType, TypeSection,
-        ValType,
+        ExportKind, ExportSection, Function, FunctionSection, GlobalType, HeapType, ImportSection,
+        Instruction as Ins, MemoryType, Module, RefType, TableType, TypeSection, ValType,
     },
-    wit_component::{metadata, ComponentEncoder},
+    wit_component::metadata,
     wit_parser::{Resolve, WorldId},
 };
 
 pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Result<Vec<u8>> {
-    let import_signatures = [
-        ("componentize_py#Dispatch", [ValType::I32; 7], []),
-        (
-            "componentize_py#Allocate",
-            [ValType::I32; 2],
-            [ValType::I32],
-        ),
-        ("componentize_py#Free", [ValType::I32; 3], []),
-        (
-            "componentize_py#LowerI32",
-            [ValType::I32; 2],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#LowerI64",
-            [ValType::I32; 2],
-            [ValType::I64],
-        ),
-        (
-            "componentize_py#LowerF32",
-            [ValType::I32; 2],
-            [ValType::F32],
-        ),
-        (
-            "componentize_py#LowerF64",
-            [ValType::I32; 2],
-            [ValType::F64],
-        ),
-        (
-            "componentize_py#LowerChar",
-            [ValType::I32; 2],
-            [ValType::I32],
-        ),
-        ("componentize_py#LowerString", [ValType::I32; 3], []),
-        (
-            "componentize_py#GetField",
-            [ValType::I32; 4],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#GetListLength",
-            [ValType::I32; 2],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#GetListElement",
-            [ValType::I32; 3],
-            [ValType::I32],
-        ),
-        ("componentize_py#LiftI32", [ValType::I32; 2], [ValType::I32]),
-        (
-            "componentize_py#LiftI64",
-            [ValType::I32, ValType::I64],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#LiftF32",
-            [ValType::I32, ValType::F32],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#LiftF64",
-            [ValType::I32, ValType::F64],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#LiftChar",
-            [ValType::I32; 2],
-            [ValType::I32],
-        ),
-        (
-            "componentize_py#LiftString",
-            [ValType::I32; 3],
-            [ValType::I32],
-        ),
-        ("componentize_py#MakeList", [ValType::I32], [ValType::I32]),
-        ("componentize_py#ListAppend", [ValType::I32; 3], []),
-        ("componentize_py#None", [ValType::I32], [ValType::I32]),
-        ("componentize_py#GetBytes", [ValType::I32; 4], []),
-        (
-            "componentize_py#MakeBytes",
-            [ValType::I32; 3],
-            [ValType::I32],
-        ),
-    ];
-
     // TODO: deduplicate types
     let mut types = TypeSection::new();
     let mut imports = ImportSection::new();
@@ -116,11 +25,11 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
     let mut function_names = Vec::new();
     let mut global_names = Vec::new();
 
-    for (name, params, results) in import_signatures {
-        let offset = types.len().try_into().unwrap();
-        types.function(params, results);
+    for (name, params, results) in IMPORT_SIGNATURES {
+        let offset = types.len();
+        types.function(params.iter().copied(), results.iter().copied());
         imports.import("env", name, EntityType::Function(offset));
-        function_names.push((offset, name));
+        function_names.push((offset, (*name).to_owned()));
     }
 
     for function in summary
@@ -129,7 +38,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         .filter(|f| matches!(f.kind, FunctionKind::Import))
     {
         let (params, results) = function.core_import_type(resolve);
-        let offset = types.len().try_into().unwrap();
+        let offset = types.len();
         types.function(params, results);
         imports.import(
             function
@@ -153,6 +62,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
             mutable: false,
         }),
     );
+    global_names.push((table_base, "__table_base".to_owned()));
 
     let stack_pointer = 1;
     imports.import(
@@ -163,6 +73,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
             mutable: true,
         }),
     );
+    global_names.push((table_base, "__stack_pointer".to_owned()));
 
     imports.import(
         "env",
@@ -179,22 +90,42 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         "env",
         "__indirect_function_table",
         EntityType::Table(TableType {
-            element_type: RefType::Func,
+            element_type: RefType {
+                nullable: true,
+                heap_type: HeapType::Func,
+            },
             minimum: summary
                 .functions
+                .iter()
                 .filter(|function| function.is_dispatchable())
-                .count(),
+                .count()
+                .try_into()
+                .unwrap(),
             maximum: None,
         }),
     );
 
-    for function in &summary.functions {
-        let offset = types.len().try_into().unwrap();
+    let export_set = summary
+        .functions
+        .iter()
+        .filter_map(|f| {
+            if let FunctionKind::Export = f.kind {
+                Some((f.interface.map(|i| i.name), f.name))
+            } else {
+                None
+            }
+        })
+        .collect::<IndexSet<_>>();
+
+    let mut import_index = 0;
+    let mut dispatch_index = 0;
+    for (index, function) in summary.functions.iter().enumerate() {
+        let offset = types.len();
         let (params, results) = function.core_export_type(resolve);
         types.function(params, results);
         functions.function(offset);
         function_names.push((offset, function.internal_name()));
-        let mut gen = FunctionBindgen::new(summary, function, stack_pointer_index, &link_map);
+        let mut gen = FunctionBindgen::new(summary, function, stack_pointer);
 
         match function.kind {
             FunctionKind::Import => {
@@ -202,7 +133,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
                 import_index += 1;
             }
             FunctionKind::Export => gen.compile_export(
-                exports
+                export_set
                     .get_index_of(&(function.interface.map(|i| i.name), function.name))
                     .unwrap()
                     .try_into()?,
@@ -244,9 +175,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
                         }
                     ),
                     ExportKind::Func,
-                    (old_function_count + new_import_count + index)
-                        .try_into()
-                        .unwrap(),
+                    import_function_count + u32::try_from(index).unwrap(),
                 );
             }
 
@@ -256,7 +185,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
 
     {
         // dispatch export
-        let offset = types.len().try_into().unwrap();
+        let offset = types.len();
         types.function([ValType::I32; DISPATCH_CORE_PARAM_COUNT], []);
         let mut dispatch = Function::new([]);
 
@@ -269,19 +198,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         });
         dispatch.instruction(&Ins::End);
 
-        code_section.function(&dispatch);
-
-        let exports = summary
-            .functions
-            .iter()
-            .filter_map(|f| {
-                if let FunctionKind::Export = f.kind {
-                    Some((f.interface.map(|i| i.name), f.name))
-                } else {
-                    None
-                }
-            })
-            .collect::<IndexSet<_>>();
+        code.function(&dispatch);
     }
 
     let mut elements = ElementSection::new();
@@ -300,7 +217,7 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
                 .filter_map(|(index, function)| {
                     function
                         .is_dispatchable()
-                        .then_some((import_function_count + index).try_into().unwrap())
+                        .then_some(import_function_count + u32::try_from(index).unwrap())
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -326,13 +243,89 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
     result.section(&elements);
     result.section(&code);
     result.section(&CustomSection {
-        name: "name",
-        data: &names_data,
+        name: Cow::Borrowed("name"),
+        data: Cow::Borrowed(&names_data),
     });
     result.section(&CustomSection {
-        name: &format!("component-type:{}", resolve.worlds[world].name),
-        data: &metadata::encode(resolve, world, wit_component::StringEncoding::UTF8, None)?,
+        name: Cow::Owned(format!("component-type:{}", resolve.worlds[world].name)),
+        data: Cow::Owned(metadata::encode(
+            resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+            None,
+        )?),
     });
 
     Ok(result.finish())
+}
+
+fn make_wasi_stub_code(name: &str) -> Vec<Ins> {
+    // For most stubs, we trap, but we need specialized stubs for the functions called by `wasi-libc`'s
+    // __wasm_call_ctors; otherwise we'd trap immediately upon calling any export.
+    match name {
+        "clock_time_get" => vec![
+            // *time = 0;
+            Ins::LocalGet(2),
+            Ins::I64Const(0),
+            Ins::I64Store(bindgen::mem_arg(0, 3)),
+            // return ERRNO_SUCCESS;
+            Ins::I32Const(0),
+        ],
+        "environ_sizes_get" => vec![
+            // *environc = 0;
+            Ins::LocalGet(0),
+            Ins::I32Const(0),
+            Ins::I32Store(bindgen::mem_arg(0, 2)),
+            // *environ_buf_size = 0;
+            Ins::LocalGet(1),
+            Ins::I32Const(0),
+            Ins::I32Store(bindgen::mem_arg(0, 2)),
+            // return ERRNO_SUCCESS;
+            Ins::I32Const(0),
+        ],
+        "fd_prestat_get" => vec![
+            // return ERRNO_BADF;
+            Ins::I32Const(8),
+        ],
+        _ => vec![Ins::Unreachable],
+    }
+}
+
+pub fn make_wasi_stub_library() -> Vec<u8> {
+    // TODO: generate names custom section
+
+    let signatures = [
+        (
+            "args_get",
+            &[ValType::I32, ValType::I32] as &[_],
+            ValType::I32,
+        ),
+        ("arg_sizes_get", &[ValType::I32, ValType::I32], ValType::I32),
+    ];
+
+    let mut types = TypeSection::new();
+    let mut exports = ExportSection::new();
+    let mut functions = FunctionSection::new();
+    let mut code = CodeSection::new();
+    for (offset, (name, params, result)) in signatures.iter().enumerate() {
+        let offset = u32::try_from(offset).unwrap();
+        types.function(params.iter().copied(), [*result]);
+        functions.function(offset);
+        let mut function = Function::new([]);
+        for ins in make_wasi_stub_code(name) {
+            function.instruction(&ins);
+        }
+        function.instruction(&Ins::End);
+        code.function(&function);
+        exports.export(name, ExportKind::Func, offset);
+    }
+
+    let mut module = Module::new();
+
+    module.section(&types);
+    module.section(&functions);
+    module.section(&exports);
+    module.section(&code);
+
+    module.finish()
 }

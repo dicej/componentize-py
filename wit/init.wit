@@ -19,34 +19,39 @@ world init {
             has-payload: bool,
         }
 
-        record owned-kind {
-            record(list<string>),
-            variant(list<case>),
-            enum(u32),
+        variant owned-kind {
+            %record(list<string>),
+            %variant(list<case>),
+            %enum(u32),
             raw-union(list<raw-union-type>),
-            flags(u32)
+            %flags(u32)
         }
 
         record owned-type {
             kind: owned-kind,
-            package: string,
+            %package: string,
             name: string
         }
 
-        variant type {
+        variant %type {
             owned(owned-type),
-            option,
+            %option,
             nesting-option,
-            result,
-            tuple(u32)
+            %result,
+            %tuple(u32)
         }
 
         record symbols {
             types-package: string,
             exports: list<function-export>,
-            types: list<type>
+            types: list<%type>
         }
 
-        func init(symbols: symbols) -> result<_, string>
+        // TODO: This should return `result<_, string>` but by pretending it can
+        // return a `symbols` we're forcing `wasmtime-wit-bindgen` to generate
+        // owning types for the above types so we don't have to deal with nested
+        // references.  We plan to modify `wasmtime-wit-bindgen` so that's no
+        // longer an issue, at which point we can remove this hack.
+        init: func(app-name: string, symbols: symbols) -> result<option<symbols>, string>
     }
 }

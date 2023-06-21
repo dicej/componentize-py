@@ -1,14 +1,14 @@
 #![deny(warnings)]
 
 use {
-    super::ENGINE,
+    super::{Ctx, ENGINE},
     anyhow::Result,
     async_trait::async_trait,
-    wasi_preview2::WasiCtx,
     wasmtime::{
         component::{Component, Linker},
         Store,
     },
+    wasmtime_wasi::preview2::{wasi, Table, WasiCtxBuilder},
 };
 
 #[tokio::test]
@@ -31,21 +31,21 @@ class Exports(exports.Exports):
     )?;
 
     let mut linker = Linker::new(&ENGINE);
-    wasi_host::command::add_to_linker(&mut linker, |ctx| ctx)?;
+    wasi::command::add_to_linker(&mut linker)?;
 
-    let mut store = Store::new(
-        &ENGINE,
-        wasmtime_wasi_preview2::WasiCtxBuilder::new()
-            .inherit_stdout()
-            .inherit_stderr()
-            .build(),
-    );
+    let mut table = Table::new();
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdout()
+        .inherit_stderr()
+        .build(&mut table)?;
+
+    let mut store = Store::new(&ENGINE, Ctx { wasi, table });
 
     let (instance, _) =
         SimpleExport::instantiate_async(&mut store, &Component::new(&ENGINE, component)?, &linker)
             .await?;
 
-    assert_eq!(45, instance.exports.call_foo(&mut store, 42).await?);
+    assert_eq!(45, instance.exports().call_foo(&mut store, 42).await?);
 
     Ok(())
 }
@@ -58,12 +58,8 @@ async fn simple_import_and_export() -> Result<()> {
         async: true
     });
 
-    struct Host {
-        wasi: WasiCtx,
-    }
-
     #[async_trait]
-    impl imports::Host for Host {
+    impl imports::Host for Ctx {
         async fn foo(&mut self, v: u32) -> Result<u32> {
             Ok(v + 2)
         }
@@ -81,19 +77,17 @@ class Exports(exports.Exports):
 "#,
     )?;
 
-    let mut linker = Linker::<Host>::new(&ENGINE);
-    wasi_host::command::add_to_linker(&mut linker, |host| &mut host.wasi)?;
-    imports::add_to_linker(&mut linker, |host| host)?;
+    let mut linker = Linker::<Ctx>::new(&ENGINE);
+    wasi::command::add_to_linker(&mut linker)?;
+    imports::add_to_linker(&mut linker, |ctx| ctx)?;
 
-    let mut store = Store::new(
-        &ENGINE,
-        Host {
-            wasi: wasmtime_wasi_preview2::WasiCtxBuilder::new()
-                .inherit_stdout()
-                .inherit_stderr()
-                .build(),
-        },
-    );
+    let mut table = Table::new();
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdout()
+        .inherit_stderr()
+        .build(&mut table)?;
+
+    let mut store = Store::new(&ENGINE, Ctx { wasi, table });
 
     let (instance, _) = SimpleImportAndExport::instantiate_async(
         &mut store,
@@ -102,7 +96,7 @@ class Exports(exports.Exports):
     )
     .await?;
 
-    assert_eq!(47, instance.exports.call_foo(&mut store, 42).await?);
+    assert_eq!(47, instance.exports().call_foo(&mut store, 42).await?);
 
     Ok(())
 }

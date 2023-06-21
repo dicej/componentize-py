@@ -8,3 +8,5 @@ anyhow = "1.0.71"
 wasm-encoder = "0.29.0"
 wasmparser = "0.107.0"
 wasm-convert = { path = "../wasm-convert" }
+async-trait = "0.1.68"
+futures = "0.3.28"

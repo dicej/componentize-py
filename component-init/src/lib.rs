@@ -1,5 +1,7 @@
 use {
     anyhow::{bail, Result},
+    async_trait::async_trait,
+    futures::future::BoxFuture,
     std::{
         collections::{hash_map::Entry, HashMap},
         iter,
@@ -21,12 +23,13 @@ use {
 const PAGE_SIZE_BYTES: i32 = 64 * 1024;
 const MAX_CONSECUTIVE_ZEROS: usize = 8;
 
+#[async_trait]
 pub trait Invoker {
-    fn call_s32(&mut self, function: &str) -> Result<i32>;
-    fn call_s64(&mut self, function: &str) -> Result<i64>;
-    fn call_float32(&mut self, function: &str) -> Result<f32>;
-    fn call_float64(&mut self, function: &str) -> Result<f64>;
-    fn call_list_u8(&mut self, function: &str) -> Result<Vec<u8>>;
+    async fn call_s32(&mut self, function: &str) -> Result<i32>;
+    async fn call_s64(&mut self, function: &str) -> Result<i64>;
+    async fn call_float32(&mut self, function: &str) -> Result<f32>;
+    async fn call_float64(&mut self, function: &str) -> Result<f64>;
+    async fn call_list_u8(&mut self, function: &str) -> Result<Vec<u8>>;
 }
 
 fn get_and_increment(n: &mut u32) -> u32 {
@@ -43,9 +46,9 @@ pub fn mem_arg(offset: u64, align: u32) -> MemArg {
     }
 }
 
-pub fn initialize(
+pub async fn initialize(
     component: &[u8],
-    initialize: impl FnOnce(&[u8]) -> Result<Box<dyn Invoker>>,
+    initialize: impl FnOnce(Vec<u8>) -> BoxFuture<'static, Result<Box<dyn Invoker>>>,
 ) -> Result<Vec<u8>> {
     // First, instrument the input component, validating that it conforms to certain rules and exposing the memory
     // and all mutable globals via synthesized function exports.
@@ -419,35 +422,34 @@ pub fn initialize(
     // Next, invoke the provided `initialize` function, which will return a trait object through which we can
     // invoke the functions we added above to capture the state of the initialized instance.
 
-    let mut invoker = initialize(&instrumented_component.finish())?;
+    let mut invoker = initialize(instrumented_component.finish()).await?;
 
-    let mut global_values = globals_to_export
-        .iter()
-        .map(|(module_index, globals_to_export)| {
-            Ok((
-                *module_index,
-                globals_to_export
-                    .iter()
-                    .map(|(global_index, (_, ty))| {
-                        let name = &format!("component-init-get-{module_index}-{global_index}");
-                        Ok((
-                            *global_index,
-                            match ty {
-                                ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name)?),
-                                ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name)?),
-                                ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name)?),
-                                ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name)?),
-                                ValType::V128 => bail!("V128 not yet supported"),
-                                ValType::Ref(_) => bail!("reference types not supported"),
-                            },
-                        ))
-                    })
-                    .collect::<Result<HashMap<_, _>>>()?,
-            ))
-        })
-        .collect::<Result<HashMap<_, _>>>()?;
+    let mut global_values = HashMap::new();
 
-    let memory_value = memory_info.map(|_| invoker.call_list_u8("component-init-get-memory"));
+    for (module_index, globals_to_export) in &globals_to_export {
+        let mut my_global_values = HashMap::new();
+        for (global_index, (_, ty)) in globals_to_export {
+            let name = &format!("component-init-get-{module_index}-{global_index}");
+            my_global_values.insert(
+                *global_index,
+                match ty {
+                    ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name).await?),
+                    ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name).await?),
+                    ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name).await?),
+                    ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name).await?),
+                    ValType::V128 => bail!("V128 not yet supported"),
+                    ValType::Ref(_) => bail!("reference types not supported"),
+                },
+            );
+        }
+        global_values.insert(*module_index, my_global_values);
+    }
+
+    let memory_value = if memory_info.is_some() {
+        Some(invoker.call_list_u8("component-init-get-memory").await?)
+    } else {
+        None
+    };
 
     // Finally, create a new component, identical to the original except with all mutable globals initialized to
     // the snapshoted values, with all data sections and start functions removed, and with a single active data

@@ -2,7 +2,8 @@
 
 use {
     anyhow::{Error, Result},
-    componentize_py_shared::{self as shared, OwnedKind, RawUnionType, ReturnStyle, Symbols},
+    componentize_py_shared::ReturnStyle,
+    exports::exports::{self as exp, Exports, OwnedKind, OwnedType, RawUnionType, Symbols},
     num_bigint::BigUint,
     once_cell::sync::OnceCell,
     pyo3::{
@@ -14,9 +15,7 @@ use {
         alloc::{self, Layout},
         env,
         ffi::c_void,
-        fs,
         mem::{self, MaybeUninit},
-        ops::Deref,
         ptr, slice, str,
     },
 };
@@ -120,156 +119,156 @@ fn componentize_py_module(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(call_import, module)?)
 }
 
-struct MyInit;
+fn do_init(app_name: String, symbols: Symbols) -> Result<()> {
+    pyo3::append_to_inittab!(componentize_py_module);
 
-impl Init for MyInit {
-    fn init(app_name: String, symbols: Symbols) -> Result<()> {
-        pyo3::append_to_inittab!(componentize_py_module);
+    pyo3::prepare_freethreaded_python();
 
-        pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        let app = py.import(app_name.as_str())?;
 
-        Python::with_gil(|py| {
-            let app = py.import(&app_name)?;
+        EXPORTS
+            .set(
+                symbols
+                    .exports
+                    .iter()
+                    .map(|function| {
+                        Ok(app
+                            .getattr(function.protocol.as_str())?
+                            .getattr(function.name.as_str())?
+                            .into())
+                    })
+                    .collect::<PyResult<_>>()?,
+            )
+            .unwrap();
 
-            EXPORTS
-                .set(
-                    symbols
-                        .exports
-                        .iter()
-                        .map(|function| {
-                            Ok(app
-                                .getattr(function.protocol.as_str())?
-                                .getattr(function.name.as_str())?
-                                .into())
-                        })
-                        .collect::<PyResult<_>>()?,
-                )
-                .unwrap();
-
-            TYPES
-                .set(
-                    symbols
-                        .types
-                        .into_iter()
-                        .map(|ty| {
-                            Ok(match ty {
-                                shared::Type::Owned {
-                                    kind,
-                                    package,
-                                    name,
-                                } => match kind {
-                                    OwnedKind::Record { fields } => Type::Record {
-                                        constructor: py
-                                            .import(package.as_str())?
-                                            .getattr(name.as_str())?
-                                            .into(),
-                                        fields,
-                                    },
-                                    OwnedKind::Variant { cases } => {
-                                        let package = py.import(package.as_str())?;
-
-                                        let cases = cases
-                                            .iter()
-                                            .map(|case| {
-                                                Ok(Case {
-                                                    constructor: package
-                                                        .getattr(case.name.as_str())?
-                                                        .into(),
-                                                    has_payload: case.has_payload,
-                                                })
-                                            })
-                                            .collect::<PyResult<Vec<_>>>()?;
-
-                                        let types_to_discriminants = PyDict::new(py);
-                                        for (index, case) in cases.iter().enumerate() {
-                                            types_to_discriminants
-                                                .set_item(&case.constructor, index)?;
-                                        }
-
-                                        Type::Variant {
-                                            cases,
-                                            types_to_discriminants: types_to_discriminants.into(),
-                                        }
-                                    }
-                                    OwnedKind::Enum(count) => Type::Enum {
-                                        constructor: py
-                                            .import(package.as_str())?
-                                            .getattr(name.as_str())?
-                                            .into(),
-                                        count,
-                                    },
-                                    OwnedKind::RawUnion { types } => {
-                                        let types_to_discriminants = PyDict::new(py);
-                                        let mut other_discriminant = None;
-                                        for (index, ty) in types.iter().enumerate() {
-                                            let ty = match ty {
-                                                RawUnionType::Int => Some(py.get_type::<PyInt>()),
-                                                RawUnionType::Float => {
-                                                    Some(py.get_type::<PyFloat>())
-                                                }
-                                                RawUnionType::Str => {
-                                                    Some(py.get_type::<PyString>())
-                                                }
-                                                RawUnionType::Other => None,
-                                            };
-
-                                            if let Some(ty) = ty {
-                                                types_to_discriminants.set_item(ty, index)?;
-                                            } else {
-                                                assert!(other_discriminant.is_none());
-                                                other_discriminant = Some(index);
-                                            }
-                                        }
-
-                                        Type::RawUnion {
-                                            types_to_discriminants: types_to_discriminants.into(),
-                                            other_discriminant,
-                                        }
-                                    }
-                                    OwnedKind::Flags(u32_count) => Type::Flags {
-                                        constructor: py
-                                            .import(package.as_str())?
-                                            .getattr(name.as_str())?
-                                            .into(),
-                                        u32_count,
-                                    },
+        TYPES
+            .set(
+                symbols
+                    .types
+                    .into_iter()
+                    .map(|ty| {
+                        Ok(match ty {
+                            exp::Type::Owned(OwnedType {
+                                kind,
+                                package,
+                                name,
+                            }) => match kind {
+                                OwnedKind::Record(fields) => Type::Record {
+                                    constructor: py
+                                        .import(package.as_str())?
+                                        .getattr(name.as_str())?
+                                        .into(),
+                                    fields,
                                 },
-                                shared::Type::Option => Type::Option,
-                                shared::Type::NestingOption => Type::NestingOption,
-                                shared::Type::Result => Type::Result,
-                                shared::Type::Tuple(length) => Type::Tuple(length),
-                            })
+                                OwnedKind::Variant(cases) => {
+                                    let package = py.import(package.as_str())?;
+
+                                    let cases = cases
+                                        .iter()
+                                        .map(|case| {
+                                            Ok(Case {
+                                                constructor: package
+                                                    .getattr(case.name.as_str())?
+                                                    .into(),
+                                                has_payload: case.has_payload,
+                                            })
+                                        })
+                                        .collect::<PyResult<Vec<_>>>()?;
+
+                                    let types_to_discriminants = PyDict::new(py);
+                                    for (index, case) in cases.iter().enumerate() {
+                                        types_to_discriminants
+                                            .set_item(&case.constructor, index)?;
+                                    }
+
+                                    Type::Variant {
+                                        cases,
+                                        types_to_discriminants: types_to_discriminants.into(),
+                                    }
+                                }
+                                OwnedKind::Enum(count) => Type::Enum {
+                                    constructor: py
+                                        .import(package.as_str())?
+                                        .getattr(name.as_str())?
+                                        .into(),
+                                    count: count.try_into().unwrap(),
+                                },
+                                OwnedKind::RawUnion(types) => {
+                                    let types_to_discriminants = PyDict::new(py);
+                                    let mut other_discriminant = None;
+                                    for (index, ty) in types.iter().enumerate() {
+                                        let ty = match ty {
+                                            RawUnionType::Int => Some(py.get_type::<PyInt>()),
+                                            RawUnionType::Float => Some(py.get_type::<PyFloat>()),
+                                            RawUnionType::Str => Some(py.get_type::<PyString>()),
+                                            RawUnionType::Other => None,
+                                        };
+
+                                        if let Some(ty) = ty {
+                                            types_to_discriminants.set_item(ty, index)?;
+                                        } else {
+                                            assert!(other_discriminant.is_none());
+                                            other_discriminant = Some(index);
+                                        }
+                                    }
+
+                                    Type::RawUnion {
+                                        types_to_discriminants: types_to_discriminants.into(),
+                                        other_discriminant,
+                                    }
+                                }
+                                OwnedKind::Flags(u32_count) => Type::Flags {
+                                    constructor: py
+                                        .import(package.as_str())?
+                                        .getattr(name.as_str())?
+                                        .into(),
+                                    u32_count: u32_count.try_into().unwrap(),
+                                },
+                            },
+                            exp::Type::Option => Type::Option,
+                            exp::Type::NestingOption => Type::NestingOption,
+                            exp::Type::Result => Type::Result,
+                            exp::Type::Tuple(length) => Type::Tuple(length.try_into().unwrap()),
                         })
-                        .collect::<PyResult<_>>()?,
-                )
-                .unwrap();
+                    })
+                    .collect::<PyResult<_>>()?,
+            )
+            .unwrap();
 
-            let types = py.import(symbols.types_package.as_str())?;
+        let types = py.import(symbols.types_package.as_str())?;
 
-            SOME_CONSTRUCTOR.set(types.getattr("Some")?.into()).unwrap();
-            OK_CONSTRUCTOR.set(types.getattr("Ok")?.into()).unwrap();
-            ERR_CONSTRUCTOR.set(types.getattr("Err")?.into()).unwrap();
+        SOME_CONSTRUCTOR.set(types.getattr("Some")?.into()).unwrap();
+        OK_CONSTRUCTOR.set(types.getattr("Ok")?.into()).unwrap();
+        ERR_CONSTRUCTOR.set(types.getattr("Err")?.into()).unwrap();
 
-            let environ = py
-                .import("os")?
-                .getattr("environ")?
-                .downcast::<PyMapping>()
-                .unwrap();
+        let environ = py
+            .import("os")?
+            .getattr("environ")?
+            .downcast::<PyMapping>()
+            .unwrap();
 
-            let keys = environ.keys()?;
+        let keys = environ.keys()?;
 
-            for i in 0..keys.len()? {
-                environ.del_item(keys.get_item(i)?)?;
-            }
+        for i in 0..keys.len()? {
+            environ.del_item(keys.get_item(i)?)?;
+        }
 
-            ENVIRON.set(environ.into()).unwrap();
+        ENVIRON.set(environ.into()).unwrap();
 
-            Ok(())
-        })
+        Ok(())
+    })
+}
+
+struct MyExports;
+
+impl Exports for MyExports {
+    fn init(app_name: String, symbols: Symbols) -> Result<(), String> {
+        do_init(app_name, symbols).map_err(|e| format!("{e:?}"))
     }
 }
 
-export_init!(MyInit);
+export_init!(MyExports);
 
 /// # Safety
 /// TODO
@@ -333,21 +332,6 @@ pub fn run_ctors() {
         }
         __wasm_call_ctors();
     }
-}
-
-/// # Safety
-/// TODO
-#[export_name = "cabi_realloc"]
-pub unsafe extern "C" fn cabi_realloc(
-    old_ptr: *mut u8,
-    old_len: usize,
-    align: usize,
-    new_size: usize,
-) -> *mut u8 {
-    assert!(old_ptr.is_null());
-    assert!(old_len == 0);
-
-    alloc::alloc(Layout::from_size_align(new_size, align).unwrap())
 }
 
 /// # Safety

@@ -1,4 +1,6 @@
-default world simple-import-and-export {
+package componentize-py:test
+
+world simple-import-and-export {
     import imports: interface {
         foo: func(v: u32) -> u32
     }

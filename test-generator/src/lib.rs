@@ -947,13 +947,15 @@ fn test{test_index}() -> Result<()> {{
 
     let wit = format!(
         "\
-interface foo {{
+package componentize-py:test
+
+interface echoes-generated {{
     {wit}
 }}
 
-default world echoes-generated {{
-    import imports: self.foo
-    export exports: self.foo
+world echoes-generated-test {{
+    import echoes-generated
+    export echoes-generated
 }}
 "
     );
@@ -964,12 +966,12 @@ default world echoes-generated {{
     let rust = format!(
         r##"
 use {{
-    super::{{Tester, SEED}},
+    super::{{Ctx, Tester, SEED}},
     anyhow::Result,
     async_trait::async_trait,
     once_cell::sync::Lazy,
     proptest::strategy::{{Just, Strategy}},
-    wasi_preview2::WasiCtx,
+    wasmtime_wasi::preview2::wasi,
     wasmtime::{{
         component::{{InstancePre, Linker, TypedFunc}},
         Store,
@@ -978,7 +980,7 @@ use {{
 
 wasmtime::component::bindgen!({{
     path: {wit_path:?},
-    world: "echoes-generated",
+    world: "echoes-generated-test",
     async: true
 }});
 
@@ -986,32 +988,26 @@ pub struct Exports {{
    {typed_function_fields}
 }}
 
-pub struct Host {{
-    wasi: WasiCtx,
-}}
-
 #[async_trait]
-impl imports::Host for Host {{
+impl componentize_py::test::echoes_generated::Host for Ctx {{
     {host_functions}
 }}
+
+pub struct Host;
 
 #[async_trait]
 impl super::Host for Host {{
     type World = Exports;
 
-    fn new(wasi: WasiCtx) -> Self {{
-        Self {{ wasi }}
-    }}
-
-    fn add_to_linker(linker: &mut Linker<Self>) -> Result<()> {{
-        wasi_host::command::add_to_linker(&mut *linker, |host| &mut host.wasi)?;
-        imports::add_to_linker(linker, |host| host)?;
+    fn add_to_linker(linker: &mut Linker<Ctx>) -> Result<()> {{
+        wasi::command::add_to_linker(&mut *linker)?;
+        componentize_py::test::echoes_generated::add_to_linker(linker, |ctx| ctx)?;
         Ok(())
     }}
 
     async fn instantiate_pre(
-        store: &mut Store<Self>,
-        pre: &InstancePre<Self>,
+        store: &mut Store<Ctx>,
+        pre: &InstancePre<Ctx>,
     ) -> Result<Self::World> {{
         let instance = pre.instantiate_async(&mut *store).await?;
         let mut exports = instance.exports(&mut *store);
