@@ -12,7 +12,7 @@ use {
         ComponentAliasSection, ComponentExportKind, ComponentExportSection, ComponentExternName,
         ComponentTypeSection, ComponentValType, ConstExpr, DataSection, ExportKind, ExportSection,
         Function, FunctionSection, GlobalSection, GlobalType, ImportSection, InstanceSection,
-        Instruction as Ins, MemArg, MemoryType, Module, ModuleArg, ModuleSection,
+        Instruction as Ins, MemArg, MemorySection, MemoryType, Module, ModuleArg, ModuleSection,
         NestedComponentSection, PrimitiveValType, RawSection, TypeSection, ValType,
     },
     wasmparser::{
@@ -22,7 +22,11 @@ use {
 };
 
 const PAGE_SIZE_BYTES: i32 = 64 * 1024;
-const MAX_CONSECUTIVE_ZEROS: usize = 8;
+
+// TODO: this should ideally be 8 in order to minimize binary size, that but can result in larger numbers of data
+// segments than some tools and runtimes will tolerate.  We should probably start at 8 and increase as necessary if
+// the segment count is too high for a given component.
+const MAX_CONSECUTIVE_ZEROS: usize = 64;
 
 #[async_trait]
 pub trait Invoker {
@@ -457,7 +461,6 @@ pub async fn initialize(
     // invoke the functions we added above to capture the state of the initialized instance.
 
     let instrumented_component = instrumented_component.finish();
-    std::fs::write("/tmp/instrumented.wasm", &instrumented_component)?;
 
     Validator::new_with_features(WasmFeatures {
         component_model: true,
@@ -553,6 +556,23 @@ pub async fn initialize(
                     let section = payload.as_section();
                     let my_range = section.as_ref().map(|(_, range)| range.clone());
                     match payload {
+                        Payload::MemorySection(reader) => {
+                            let mut memories = MemorySection::new();
+                            for memory in reader {
+                                let mut memory = memory?;
+
+                                memory.initial = u64::try_from(
+                                    (memory_value.as_deref().unwrap().len()
+                                        / usize::try_from(PAGE_SIZE_BYTES).unwrap())
+                                        + 1,
+                                )
+                                .unwrap();
+
+                                memories.memory(IntoMemoryType(memory).into());
+                            }
+                            initialized_module.section(&memories);
+                        }
+
                         Payload::ImportSection(reader) => {
                             for import in reader {
                                 if let TypeRef::Global(_) = import?.ty {
@@ -605,6 +625,7 @@ pub async fn initialize(
                             value[start..][..len].iter().copied(),
                         );
                     }
+                    initialized_module.section(&data);
                 }
 
                 initialized_component.section(&ModuleSection(&initialized_module));
@@ -615,8 +636,6 @@ pub async fn initialize(
     }
 
     let initialized_component = initialized_component.finish();
-
-    std::fs::write("/tmp/initialized.wasm", &initialized_component)?;
 
     Validator::new_with_features(WasmFeatures {
         component_model: true,

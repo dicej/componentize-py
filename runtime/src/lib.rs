@@ -85,8 +85,13 @@ impl<T: std::error::Error + Send + Sync + 'static> From<T> for Anyhow {
 
 #[link(wasm_import_module = "env")]
 extern "C" {
-    #[cfg_attr(target_arch = "wasm32", link_name = "componentize-py#DispatchToHost")]
-    fn dispatch(context: *const c_void, input: *const c_void, output: *mut c_void, index: u32);
+    #[cfg_attr(target_arch = "wasm32", link_name = "componentize-py#CallIndirect")]
+    fn componentize_py_call_indirect(
+        context: *const c_void,
+        input: *const c_void,
+        output: *mut c_void,
+        index: u32,
+    );
 }
 
 #[pyo3::pyfunction]
@@ -99,7 +104,7 @@ fn call_import<'a>(
 ) -> PyResult<Vec<&'a PyAny>> {
     let mut results = vec![MaybeUninit::<&PyAny>::uninit(); result_count];
     unsafe {
-        dispatch(
+        componentize_py_call_indirect(
             &module.py() as *const _ as _,
             params.as_ptr() as _,
             results.as_mut_ptr() as _,
@@ -290,7 +295,7 @@ pub unsafe extern "C" fn componentize_py_dispatch(
         let mut params_lifted =
             vec![MaybeUninit::<&PyAny>::uninit(); param_count.try_into().unwrap()];
 
-        dispatch(
+        componentize_py_call_indirect(
             &py as *const _ as _,
             params,
             params_lifted.as_mut_ptr() as _,
@@ -318,7 +323,7 @@ pub unsafe extern "C" fn componentize_py_dispatch(
         let result = result.into_ref(py);
         let result_array = [result];
 
-        dispatch(
+        componentize_py_call_indirect(
             &py as *const _ as _,
             result_array.as_ptr() as *const _ as _,
             results,

@@ -18,6 +18,16 @@ use {
     wit_parser::{Resolve, WorldId},
 };
 
+const WASM_DYLINK_MEM_INFO: u8 = 1;
+const WASM_DYLINK_NEEDED: u8 = 2;
+
+struct MemInfo {
+    memory_size: u32,
+    memory_alignment: u32,
+    table_size: u32,
+    table_alignment: u32,
+}
+
 pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Result<Vec<u8>> {
     // TODO: deduplicate types
     let mut types = TypeSection::new();
@@ -194,19 +204,20 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
     }
 
     {
-        // dispatch export
         let dispatch_offset = types.len();
         types.function([ValType::I32; DISPATCH_CORE_PARAM_COUNT], []);
         let dispatchable_offset = types.len();
         types.function([ValType::I32; DISPATCHABLE_CORE_PARAM_COUNT], []);
         functions.function(dispatch_offset);
-        let name = "componentize-py#DispatchToHost";
+        let name = "componentize-py#CallIndirect";
         function_names.push((dispatch_offset, name.to_owned()));
         let mut dispatch = Function::new([]);
 
         for local in 0..DISPATCH_CORE_PARAM_COUNT {
             dispatch.instruction(&Ins::LocalGet(u32::try_from(local).unwrap()));
         }
+        dispatch.instruction(&Ins::GlobalGet(table_base));
+        dispatch.instruction(&Ins::I32Add);
         dispatch.instruction(&Ins::CallIndirect {
             ty: dispatchable_offset,
             table: 0,
@@ -258,7 +269,40 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         subsection.encode(&mut names_data);
     }
 
+    let mem_info = MemInfo {
+        memory_size: 0,
+        memory_alignment: 0,
+        table_size: summary
+            .functions
+            .iter()
+            .filter(|function| function.is_dispatchable())
+            .count()
+            .try_into()
+            .unwrap(),
+        table_alignment: 0,
+    };
+
+    let mut mem_info_subsection = Vec::new();
+    mem_info.memory_size.encode(&mut mem_info_subsection);
+    mem_info.memory_alignment.encode(&mut mem_info_subsection);
+    mem_info.table_size.encode(&mut mem_info_subsection);
+    mem_info.table_alignment.encode(&mut mem_info_subsection);
+
+    let mut needed_subsection = Vec::new();
+    1_u32.encode(&mut needed_subsection);
+    "libcomponentize_py_runtime.so".encode(&mut needed_subsection);
+
+    let mut dylink0 = Vec::new();
+    dylink0.push(WASM_DYLINK_MEM_INFO);
+    mem_info_subsection.encode(&mut dylink0);
+    dylink0.push(WASM_DYLINK_NEEDED);
+    needed_subsection.encode(&mut dylink0);
+
     let mut result = Module::new();
+    result.section(&CustomSection {
+        name: Cow::Borrowed("dylink.0"),
+        data: Cow::Borrowed(&dylink0),
+    });
     result.section(&types);
     result.section(&imports);
     result.section(&functions);
@@ -280,8 +324,6 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
     });
 
     let result = result.finish();
-
-    std::fs::write("/tmp/module.wasm", &result)?;
 
     wasmparser::validate(&result)?;
 

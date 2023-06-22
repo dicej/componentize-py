@@ -238,8 +238,6 @@ pub async fn componentize(
 
     let component = linker.encode()?;
 
-    std::fs::write("/tmp/component.wasm", &component).unwrap();
-
     let generated_code = tempfile::tempdir()?;
     let world_dir = generated_code
         .path()
