@@ -13,7 +13,8 @@ impl<'a> From<IntoConstExpr<'a>> for ConstExpr {
         let mut reader = val.0.get_binary_reader();
         ConstExpr::raw(
             reader
-                .read_bytes(reader.bytes_remaining())
+                // skip `end` instruction:
+                .read_bytes(reader.bytes_remaining() - 1)
                 .unwrap()
                 .iter()
                 .copied(),

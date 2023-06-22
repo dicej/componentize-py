@@ -1,5 +1,5 @@
 use {
-    anyhow::{bail, Result},
+    anyhow::{bail, Context, Result},
     async_trait::async_trait,
     futures::future::BoxFuture,
     std::{
@@ -12,11 +12,12 @@ use {
         ComponentAliasSection, ComponentExportKind, ComponentExportSection, ComponentExternName,
         ComponentTypeSection, ComponentValType, ConstExpr, DataSection, ExportKind, ExportSection,
         Function, FunctionSection, GlobalSection, GlobalType, ImportSection, InstanceSection,
-        Instruction as Ins, MemArg, MemoryType, Module, ModuleArg, ModuleSection, PrimitiveValType,
-        RawSection, TypeSection, ValType,
+        Instruction as Ins, MemArg, MemoryType, Module, ModuleArg, ModuleSection,
+        NestedComponentSection, PrimitiveValType, RawSection, TypeSection, ValType,
     },
     wasmparser::{
-        ComponentAlias, Encoding, ExternalKind, Instance, Operator, Parser, Payload, TypeRef,
+        CanonicalFunction, ComponentAlias, ComponentExternalKind, ExternalKind, Instance, Operator,
+        Parser, Payload, TypeRef, Validator, WasmFeatures,
     },
 };
 
@@ -59,7 +60,6 @@ pub async fn initialize(
     // Current rules:
     // - Flat structure (i.e. no subcomponents)
     // - Single memory
-    // - Single table
     // - No runtime table operations
     // - No reference type globals
     // - Each module instantiated at most once
@@ -89,34 +89,45 @@ pub async fn initialize(
     let mut module_count = 0;
     let mut instance_count = 0;
     let mut core_function_count = 0;
+    let mut function_count = 0;
     let mut type_count = 0;
     let mut memory_info = None;
-    let mut saw_table = false;
     let mut globals_to_export = HashMap::<_, HashMap<_, _>>::new();
     let mut instantiations = HashMap::new();
     let mut stack_pointer_exports = Vec::new();
     let mut instrumented_component = Component::new();
-    for payload in Parser::new(0).parse_all(component) {
+    let mut parser = Parser::new(0).parse_all(component);
+    while let Some(payload) = parser.next() {
         let payload = payload?;
         let section = payload.as_section();
         match payload {
-            Payload::Version { encoding, .. } => {
-                if !matches!(encoding, Encoding::Component) {
-                    bail!("expected component; got {encoding:?}");
+            Payload::ComponentSection { range, .. } => {
+                let mut subcomponent = Component::new();
+                while let Some(payload) = parser.next() {
+                    let payload = payload?;
+                    let section = payload.as_section();
+                    let my_range = section.as_ref().map(|(_, range)| range.clone());
+                    copy_component_section(section, component, &mut subcomponent);
+
+                    if let Some(my_range) = my_range {
+                        if my_range.end >= range.end {
+                            break;
+                        }
+                    }
                 }
-                copy_component_section(section, component, &mut instrumented_component);
+                instrumented_component.section(&NestedComponentSection(&subcomponent));
             }
 
-            Payload::ModuleSection { parser, range } => {
-                let module = &component[range];
+            Payload::ModuleSection { range, .. } => {
                 let mut global_types = Vec::new();
                 let mut empty = HashMap::new();
                 let mut instrumented_module = Module::new();
                 let module_index = get_and_increment(&mut module_count);
                 let mut global_count = 0;
-                for payload in parser.parse_all(module) {
+                while let Some(payload) = parser.next() {
                     let payload = payload?;
                     let section = payload.as_section();
+                    let my_range = section.as_ref().map(|(_, range)| range.clone());
                     match payload {
                         Payload::ImportSection(reader) => {
                             for import in reader {
@@ -124,17 +135,7 @@ pub async fn initialize(
                                     global_count += 1;
                                 }
                             }
-                            copy_module_section(section, module, &mut instrumented_module);
-                        }
-
-                        Payload::TableSection(reader) => {
-                            for _ in reader {
-                                if saw_table {
-                                    bail!("only one table allowed per component");
-                                }
-                                saw_table = true;
-                            }
-                            copy_module_section(section, module, &mut instrumented_module);
+                            copy_module_section(section, component, &mut instrumented_module);
                         }
 
                         Payload::MemorySection(reader) => {
@@ -148,7 +149,7 @@ pub async fn initialize(
                                     MemoryType::from(IntoMemoryType(memory?)),
                                 ));
                             }
-                            copy_module_section(section, module, &mut instrumented_module);
+                            copy_module_section(section, component, &mut instrumented_module);
                         }
 
                         Payload::GlobalSection(reader) => {
@@ -164,7 +165,7 @@ pub async fn initialize(
                                         .insert(global_index, (None, ty.val_type));
                                 }
                             }
-                            copy_module_section(section, module, &mut instrumented_module);
+                            copy_module_section(section, component, &mut instrumented_module);
                         }
 
                         Payload::ExportSection(reader) => {
@@ -220,10 +221,16 @@ pub async fn initialize(
                                     _ => (),
                                 }
                             }
-                            copy_module_section(section, module, &mut instrumented_module);
+                            copy_module_section(section, component, &mut instrumented_module);
                         }
 
-                        _ => copy_module_section(section, module, &mut instrumented_module),
+                        _ => copy_module_section(section, component, &mut instrumented_module),
+                    }
+
+                    if let Some(my_range) = my_range {
+                        if my_range.end >= range.end {
+                            break;
+                        }
                     }
                 }
                 instrumented_component.section(&ModuleSection(&instrumented_module));
@@ -247,8 +254,41 @@ pub async fn initialize(
 
             Payload::ComponentAliasSection(reader) => {
                 for alias in reader {
-                    if let ComponentAlias::CoreInstanceExport { .. } = alias? {
-                        core_function_count += 1;
+                    match alias? {
+                        ComponentAlias::CoreInstanceExport {
+                            kind: ExternalKind::Func,
+                            ..
+                        } => {
+                            core_function_count += 1;
+                        }
+                        ComponentAlias::InstanceExport {
+                            kind: ComponentExternalKind::Type,
+                            ..
+                        } => {
+                            type_count += 1;
+                        }
+                        ComponentAlias::InstanceExport {
+                            kind: ComponentExternalKind::Func,
+                            ..
+                        } => {
+                            function_count += 1;
+                        }
+                        _ => (),
+                    }
+                }
+                copy_component_section(section, component, &mut instrumented_component);
+            }
+
+            Payload::ComponentCanonicalSection(reader) => {
+                for function in reader {
+                    match function? {
+                        CanonicalFunction::Lower { .. } => {
+                            core_function_count += 1;
+                        }
+                        CanonicalFunction::Lift { .. } => {
+                            function_count += 1;
+                        }
+                        _ => (),
                     }
                 }
                 copy_component_section(section, component, &mut instrumented_component);
@@ -274,28 +314,34 @@ pub async fn initialize(
     let mut lifts = CanonicalFunctionSection::new();
     let mut component_types = ComponentTypeSection::new();
     let mut component_exports = ComponentExportSection::new();
+    let mut stack_pointers = Vec::new();
     for (module_index, globals_to_export) in &globals_to_export {
         for (global_index, (name, ty)) in globals_to_export {
             let offset = types.len();
             types.function([], [*ty]);
+            let name = name.as_deref().unwrap();
             imports.import(
                 &module_index.to_string(),
-                name.as_deref().unwrap(),
+                name,
                 GlobalType {
                     val_type: *ty,
                     mutable: true,
                 },
             );
+            if name == "__stack_pointer" {
+                stack_pointers.push((offset, *ty));
+            }
             functions.function(offset);
             let mut function = Function::new([]);
             function.instruction(&Ins::GlobalGet(offset));
             function.instruction(&Ins::End);
             code.function(&function);
-            let export_name = format!("component-init-get-{module_index}-{global_index}");
+            let export_name =
+                format!("component-init-get-module{module_index}-global{global_index}");
             exports.export(&export_name, ExportKind::Func, offset);
-            aliases.alias(Alias::InstanceExport {
+            aliases.alias(Alias::CoreInstanceExport {
                 instance: instance_count,
-                kind: ComponentExportKind::Func,
+                kind: ExportKind::Func,
                 name: &export_name,
             });
             component_types
@@ -311,27 +357,21 @@ pub async fn initialize(
                 });
             lifts.lift(
                 core_function_count + offset,
-                type_count + offset,
+                type_count + component_types.len() - 1,
                 [CanonicalOption::UTF8],
             );
             component_exports.export(
                 ComponentExternName::Kebab(&export_name),
                 ComponentExportKind::Func,
-                offset,
+                function_count + offset,
                 None,
             );
         }
     }
 
     if let Some((module_index, name, ty)) = memory_info {
-        let stack_module_index = match stack_pointer_exports.as_slice() {
-            [(
-                index,
-                GlobalType {
-                    val_type: ValType::I32,
-                    mutable: true,
-                },
-            )] => index,
+        let stack_pointer = match stack_pointers.as_slice() {
+            [(offset, ValType::I32)] => *offset,
 
             _ => bail!(
                 "component with memory must contain exactly one module which \
@@ -341,24 +381,17 @@ pub async fn initialize(
         let offset = types.len();
         types.function([], [ValType::I32]);
         imports.import(&module_index.to_string(), name, ty);
-        imports.import(
-            &stack_module_index.to_string(),
-            "__stack_pointer",
-            GlobalType {
-                val_type: ValType::I32,
-                mutable: true,
-            },
-        );
         functions.function(offset);
 
         let mut function = Function::new([(1, ValType::I32)]);
-        function.instruction(&Ins::GlobalGet(offset));
+        function.instruction(&Ins::GlobalGet(stack_pointer));
         function.instruction(&Ins::I32Const(8));
         function.instruction(&Ins::I32Sub);
         function.instruction(&Ins::LocalTee(0));
         function.instruction(&Ins::I32Const(0));
         function.instruction(&Ins::I32Store(mem_arg(0, 2)));
         function.instruction(&Ins::LocalGet(0));
+        function.instruction(&Ins::I32Const(0));
         function.instruction(&Ins::MemoryGrow(0));
         function.instruction(&Ins::I32Const(PAGE_SIZE_BYTES));
         function.instruction(&Ins::I32Mul);
@@ -369,25 +402,26 @@ pub async fn initialize(
 
         let export_name = "component-init-get-memory".to_owned();
         exports.export(&export_name, ExportKind::Func, offset);
-        aliases.alias(Alias::InstanceExport {
+        aliases.alias(Alias::CoreInstanceExport {
             instance: instance_count,
-            kind: ComponentExportKind::Func,
+            kind: ExportKind::Func,
             name: &export_name,
         });
+        let list_type = type_count + component_types.len();
         component_types.defined_type().list(PrimitiveValType::U8);
         component_types
             .function()
             .params(iter::empty::<(_, ComponentValType)>())
-            .result(ComponentValType::Type(offset));
+            .result(ComponentValType::Type(list_type));
         lifts.lift(
             core_function_count + offset,
-            type_count + offset + 1,
-            [CanonicalOption::UTF8],
+            type_count + component_types.len() - 1,
+            [CanonicalOption::UTF8, CanonicalOption::Memory(0)],
         );
         component_exports.export(
             ComponentExternName::Kebab(&export_name),
             ComponentExportKind::Func,
-            offset,
+            function_count + offset,
             None,
         );
     }
@@ -414,29 +448,58 @@ pub async fn initialize(
 
     instrumented_component.section(&ModuleSection(&module));
     instrumented_component.section(&instances);
+    instrumented_component.section(&component_types);
     instrumented_component.section(&aliases);
     instrumented_component.section(&lifts);
-    instrumented_component.section(&component_types);
     instrumented_component.section(&component_exports);
 
     // Next, invoke the provided `initialize` function, which will return a trait object through which we can
     // invoke the functions we added above to capture the state of the initialized instance.
 
-    let mut invoker = initialize(instrumented_component.finish()).await?;
+    let instrumented_component = instrumented_component.finish();
+    std::fs::write("/tmp/instrumented.wasm", &instrumented_component)?;
+
+    Validator::new_with_features(WasmFeatures {
+        component_model: true,
+        ..WasmFeatures::default()
+    })
+    .validate_all(&instrumented_component)?;
+
+    let mut invoker = initialize(instrumented_component).await?;
 
     let mut global_values = HashMap::new();
 
     for (module_index, globals_to_export) in &globals_to_export {
         let mut my_global_values = HashMap::new();
         for (global_index, (_, ty)) in globals_to_export {
-            let name = &format!("component-init-get-{module_index}-{global_index}");
+            let name = &format!("component-init-get-module{module_index}-global{global_index}");
             my_global_values.insert(
                 *global_index,
                 match ty {
-                    ValType::I32 => ConstExpr::i32_const(invoker.call_s32(name).await?),
-                    ValType::I64 => ConstExpr::i64_const(invoker.call_s64(name).await?),
-                    ValType::F32 => ConstExpr::f32_const(invoker.call_float32(name).await?),
-                    ValType::F64 => ConstExpr::f64_const(invoker.call_float64(name).await?),
+                    ValType::I32 => ConstExpr::i32_const(
+                        invoker
+                            .call_s32(name)
+                            .await
+                            .with_context(|| name.to_owned())?,
+                    ),
+                    ValType::I64 => ConstExpr::i64_const(
+                        invoker
+                            .call_s64(name)
+                            .await
+                            .with_context(|| name.to_owned())?,
+                    ),
+                    ValType::F32 => ConstExpr::f32_const(
+                        invoker
+                            .call_float32(name)
+                            .await
+                            .with_context(|| name.to_owned())?,
+                    ),
+                    ValType::F64 => ConstExpr::f64_const(
+                        invoker
+                            .call_float64(name)
+                            .await
+                            .with_context(|| name.to_owned())?,
+                    ),
                     ValType::V128 => bail!("V128 not yet supported"),
                     ValType::Ref(_) => bail!("reference types not supported"),
                 },
@@ -446,7 +509,8 @@ pub async fn initialize(
     }
 
     let memory_value = if memory_info.is_some() {
-        Some(invoker.call_list_u8("component-init-get-memory").await?)
+        let name = "component-init-get-memory";
+        Some(invoker.call_list_u8(name).await.context(name)?)
     } else {
         None
     };
@@ -457,19 +521,37 @@ pub async fn initialize(
 
     let mut initialized_component = Component::new();
     let mut module_count = 0;
-    for payload in Parser::new(0).parse_all(component) {
+    let mut parser = Parser::new(0).parse_all(component);
+    while let Some(payload) = parser.next() {
         let payload = payload?;
         let section = payload.as_section();
         match payload {
-            Payload::ModuleSection { parser, range } => {
-                let module = &component[range];
+            Payload::ComponentSection { range, .. } => {
+                let mut subcomponent = Component::new();
+                while let Some(payload) = parser.next() {
+                    let payload = payload?;
+                    let section = payload.as_section();
+                    let my_range = section.as_ref().map(|(_, range)| range.clone());
+                    copy_component_section(section, component, &mut subcomponent);
+
+                    if let Some(my_range) = my_range {
+                        if my_range.end >= range.end {
+                            break;
+                        }
+                    }
+                }
+                initialized_component.section(&NestedComponentSection(&subcomponent));
+            }
+
+            Payload::ModuleSection { range, .. } => {
                 let mut initialized_module = Module::new();
                 let module_index = get_and_increment(&mut module_count);
                 let mut global_values = global_values.remove(&module_index);
                 let mut global_count = 0;
-                for payload in parser.parse_all(module) {
+                while let Some(payload) = parser.next() {
                     let payload = payload?;
                     let section = payload.as_section();
+                    let my_range = section.as_ref().map(|(_, range)| range.clone());
                     match payload {
                         Payload::ImportSection(reader) => {
                             for import in reader {
@@ -477,7 +559,7 @@ pub async fn initialize(
                                     global_count += 1;
                                 }
                             }
-                            copy_module_section(section, module, &mut initialized_module);
+                            copy_module_section(section, component, &mut initialized_module);
                         }
 
                         Payload::GlobalSection(reader) => {
@@ -503,7 +585,13 @@ pub async fn initialize(
 
                         Payload::DataSection(_) | Payload::StartSection { .. } => (),
 
-                        _ => copy_module_section(section, module, &mut initialized_module),
+                        _ => copy_module_section(section, component, &mut initialized_module),
+                    }
+
+                    if let Some(my_range) = my_range {
+                        if my_range.end >= range.end {
+                            break;
+                        }
                     }
                 }
 
@@ -518,13 +606,25 @@ pub async fn initialize(
                         );
                     }
                 }
+
+                initialized_component.section(&ModuleSection(&initialized_module));
             }
 
             _ => copy_component_section(section, component, &mut initialized_component),
         }
     }
 
-    Ok(initialized_component.finish())
+    let initialized_component = initialized_component.finish();
+
+    std::fs::write("/tmp/initialized.wasm", &initialized_component)?;
+
+    Validator::new_with_features(WasmFeatures {
+        component_model: true,
+        ..WasmFeatures::default()
+    })
+    .validate_all(&initialized_component)?;
+
+    Ok(initialized_component)
 }
 
 struct Segments<'a> {

@@ -2,7 +2,7 @@ use {
     crate::{
         bindgen::{
             self, FunctionBindgen, DISPATCHABLE_CORE_PARAM_COUNT, DISPATCH_CORE_PARAM_COUNT,
-            IMPORT_SIGNATURES,
+            IMPORTS, IMPORT_SIGNATURES,
         },
         summary::{FunctionKind, Summary},
     },
@@ -172,7 +172,14 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
                             ""
                         },
                         if let Some(interface) = function.interface {
-                            format!("{}#{}", interface.name, function.name)
+                            if let Some(package) = interface.package {
+                                format!(
+                                    "{}:{}/{}#{}",
+                                    package.namespace, package.name, interface.name, function.name
+                                )
+                            } else {
+                                format!("{}#{}", interface.name, function.name)
+                            }
                         } else {
                             function.name.to_owned()
                         }
@@ -210,6 +217,12 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
 
         exports.export(name, ExportKind::Func, dispatch_offset);
     }
+
+    exports.export(
+        "cabi_realloc",
+        ExportKind::Func,
+        *IMPORTS.get("cabi_realloc").unwrap(),
+    );
 
     let mut elements = ElementSection::new();
     elements.active(

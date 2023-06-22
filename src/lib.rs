@@ -93,7 +93,9 @@ impl Invoker for MyInvoker {
             .exports(&mut self.store)
             .root()
             .typed_func::<(), (i32,)>(function)?;
-        Ok(func.call_async(&mut self.store, ()).await?.0)
+        let result = func.call_async(&mut self.store, ()).await?.0;
+        func.post_return_async(&mut self.store).await?;
+        Ok(result)
     }
 
     async fn call_s64(&mut self, function: &str) -> Result<i64> {
@@ -102,7 +104,9 @@ impl Invoker for MyInvoker {
             .exports(&mut self.store)
             .root()
             .typed_func::<(), (i64,)>(function)?;
-        Ok(func.call_async(&mut self.store, ()).await?.0)
+        let result = func.call_async(&mut self.store, ()).await?.0;
+        func.post_return_async(&mut self.store).await?;
+        Ok(result)
     }
 
     async fn call_float32(&mut self, function: &str) -> Result<f32> {
@@ -111,7 +115,9 @@ impl Invoker for MyInvoker {
             .exports(&mut self.store)
             .root()
             .typed_func::<(), (f32,)>(function)?;
-        Ok(func.call_async(&mut self.store, ()).await?.0)
+        let result = func.call_async(&mut self.store, ()).await?.0;
+        func.post_return_async(&mut self.store).await?;
+        Ok(result)
     }
 
     async fn call_float64(&mut self, function: &str) -> Result<f64> {
@@ -120,7 +126,9 @@ impl Invoker for MyInvoker {
             .exports(&mut self.store)
             .root()
             .typed_func::<(), (f64,)>(function)?;
-        Ok(func.call_async(&mut self.store, ()).await?.0)
+        let result = func.call_async(&mut self.store, ()).await?.0;
+        func.post_return_async(&mut self.store).await?;
+        Ok(result)
     }
 
     async fn call_list_u8(&mut self, function: &str) -> Result<Vec<u8>> {
@@ -129,7 +137,9 @@ impl Invoker for MyInvoker {
             .exports(&mut self.store)
             .root()
             .typed_func::<(), (Vec<u8>,)>(function)?;
-        Ok(func.call_async(&mut self.store, ()).await?.0)
+        let result = func.call_async(&mut self.store, ()).await?.0;
+        func.post_return_async(&mut self.store).await?;
+        Ok(result)
     }
 }
 
@@ -161,6 +171,7 @@ pub async fn componentize(
     let symbols = summary.collect_symbols();
 
     let mut linker = wit_component::Linker::default()
+        .validate(true)
         .library(
             "libcomponentize_py_runtime.so",
             &zstd::decode_all(Cursor::new(include_bytes!(concat!(
@@ -215,10 +226,10 @@ pub async fn componentize(
         )?;
     } else {
         linker = linker.adapter(
-            "wasi-snapshot-preview1",
+            "wasi_snapshot_preview1",
             &zstd::decode_all(Cursor::new(include_bytes!(concat!(
                 env!("OUT_DIR"),
-                "/wasi_snapshot_preview1.wasm.zst"
+                "/wasi_preview1_component_adapter.wasm.zst"
             ))))?,
         )?;
     }
@@ -226,6 +237,8 @@ pub async fn componentize(
     // todo: add `--dl-openable` options for any .cpython-311-wasm32-wasi.so files found in `python_path`
 
     let component = linker.encode()?;
+
+    std::fs::write("/tmp/component.wasm", &component).unwrap();
 
     let generated_code = tempfile::tempdir()?;
     let world_dir = generated_code

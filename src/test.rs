@@ -40,12 +40,12 @@ static ENGINE: Lazy<Engine> = Lazy::new(|| {
     Engine::new(&config).unwrap()
 });
 
-fn make_component(wit: &str, python: &str) -> Result<Vec<u8>> {
+async fn make_component(wit: &str, python: &str) -> Result<Vec<u8>> {
     let tempdir = tempfile::tempdir()?;
     fs::write(tempdir.path().join("app.wit"), wit)?;
     fs::write(tempdir.path().join("app.py"), python)?;
 
-    Runtime::new()?.block_on(crate::componentize(
+    crate::componentize(
         &tempdir.path().join("app.wit"),
         None,
         tempdir
@@ -55,7 +55,8 @@ fn make_component(wit: &str, python: &str) -> Result<Vec<u8>> {
         "app",
         false,
         &tempdir.path().join("app.wasm"),
-    ))?;
+    )
+    .await?;
 
     Ok(fs::read(tempdir.path().join("app.wasm"))?)
 }
@@ -116,7 +117,7 @@ struct Tester<H> {
 
 impl<H: Host> Tester<H> {
     fn new(wit: &str, guest_code: &str, seed: [u8; 32]) -> Result<Self> {
-        let component = &make_component(wit, guest_code)?;
+        let component = &Runtime::new()?.block_on(make_component(wit, guest_code))?;
         let mut linker = Linker::<Ctx>::new(&ENGINE);
         H::add_to_linker(&mut linker)?;
         Ok(Self {

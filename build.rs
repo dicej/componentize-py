@@ -45,42 +45,29 @@ fn stubs_for_clippy(out_dir: &Path) -> Result<()> {
         "cargo:warning=using stubbed runtime, core library, and adapter for static analysis purposes..."
     );
 
-    let libraries = [
+    let files = [
         "libcomponentize_py_runtime.so.zst",
         "libpython3.11.so.zst",
         "libc.so.zst",
         "libc++.so.zst",
         "libc++abi.so.zst",
+        "wasi_snapshot_preview1.wasm.zst",
     ];
 
-    for library in libraries {
-        let runtime_path = out_dir.join(library);
+    for file in files {
+        let path = out_dir.join(file);
 
-        if !runtime_path.exists() {
-            Encoder::new(File::create(runtime_path)?, ZSTD_COMPRESSION_LEVEL)?.do_finish()?;
+        if !path.exists() {
+            Encoder::new(File::create(path)?, ZSTD_COMPRESSION_LEVEL)?.do_finish()?;
         }
     }
 
-    let core_library_path = out_dir.join("python-lib.tar.zst");
+    let path = out_dir.join("python-lib.tar.zst");
 
-    if !core_library_path.exists() {
-        Builder::new(Encoder::new(
-            File::create(core_library_path)?,
-            ZSTD_COMPRESSION_LEVEL,
-        )?)
-        .into_inner()?
-        .do_finish()?;
-    }
-
-    let wasi_adapter_path = out_dir.join("wasi_snapshot_preview1.wasm.zst");
-
-    if !wasi_adapter_path.exists() {
-        Builder::new(Encoder::new(
-            File::create(wasi_adapter_path)?,
-            ZSTD_COMPRESSION_LEVEL,
-        )?)
-        .into_inner()?
-        .do_finish()?;
+    if !path.exists() {
+        Builder::new(Encoder::new(File::create(path)?, ZSTD_COMPRESSION_LEVEL)?)
+            .into_inner()?
+            .do_finish()?;
     }
 
     Ok(())
@@ -127,7 +114,7 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
             .arg(format!("-L{}", cpython_wasi_dir.to_str().unwrap()))
             .arg("-lpython3.11"));
 
-        compress(out_dir, name, out_dir)?;
+        compress(out_dir, name, out_dir, false)?;
     } else {
         bail!("no such file: {}", path.display())
     }
@@ -139,10 +126,11 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
             &wasi_sdk.join("share/wasi-sysroot/lib/wasm32-wasi"),
             library,
             out_dir,
+            true,
         )?;
     }
 
-    compress(&cpython_wasi_dir, "libpython3.11.so", out_dir)?;
+    compress(&cpython_wasi_dir, "libpython3.11.so", out_dir, true)?;
 
     let path = repo_dir.join("cpython/builddir/wasi/install/lib/python3.11");
 
@@ -174,13 +162,18 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
         &out_dir.join("wasm32-unknown-unknown/release"),
         "wasi_preview1_component_adapter.wasm",
         out_dir,
+        false,
     )?;
 
     Ok(())
 }
 
-fn compress(src_dir: &Path, name: &str, dst_dir: &Path) -> Result<()> {
+fn compress(src_dir: &Path, name: &str, dst_dir: &Path, rerun_if_changed: bool) -> Result<()> {
     let path = src_dir.join(name);
+
+    if rerun_if_changed {
+        println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
+    }
 
     if path.exists() {
         let mut encoder = Encoder::new(

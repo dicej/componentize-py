@@ -119,7 +119,7 @@ fn componentize_py_module(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_function(pyo3::wrap_pyfunction!(call_import, module)?)
 }
 
-fn do_init(app_name: String, symbols: Symbols) -> Result<Option<Symbols>> {
+fn do_init(app_name: String, symbols: Symbols) -> Result<()> {
     pyo3::append_to_inittab!(componentize_py_module);
 
     pyo3::prepare_freethreaded_python();
@@ -256,7 +256,7 @@ fn do_init(app_name: String, symbols: Symbols) -> Result<Option<Symbols>> {
 
         ENVIRON.set(environ.into()).unwrap();
 
-        Ok(None)
+        Ok(())
     })
 }
 
@@ -264,7 +264,9 @@ struct MyExports;
 
 impl Exports for MyExports {
     fn init(app_name: String, symbols: Symbols) -> Result<Option<Symbols>, String> {
-        do_init(app_name, symbols).map_err(|e| format!("{e:?}"))
+        do_init(app_name, symbols)
+            .map(|()| None)
+            .map_err(|e| format!("{e:?}"))
     }
 }
 
@@ -772,4 +774,30 @@ pub unsafe extern "C" fn componentize_py_make_bytes<'a>(
         Ok(())
     })
     .unwrap()
+}
+
+/// # Safety
+/// TODO
+pub unsafe extern "C" fn cabi_realloc(
+    old_ptr: *mut u8,
+    old_len: usize,
+    align: usize,
+    new_size: usize,
+) -> *mut u8 {
+    assert!(old_ptr.is_null());
+    assert!(old_len == 0);
+
+    alloc::alloc(Layout::from_size_align(new_size, align).unwrap())
+}
+
+/// # Safety
+/// TODO
+#[export_name = "cabi_export_realloc"]
+pub unsafe extern "C" fn cabi_export_realloc(
+    old_ptr: *mut u8,
+    old_len: usize,
+    align: usize,
+    new_size: usize,
+) -> *mut u8 {
+    cabi_realloc(old_ptr, old_len, align, new_size)
 }

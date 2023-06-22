@@ -40,8 +40,15 @@ pub enum FunctionKind {
 }
 
 #[derive(Copy, Clone)]
+pub struct PackageName<'a> {
+    pub namespace: &'a str,
+    pub name: &'a str,
+}
+
+#[derive(Copy, Clone)]
 pub struct MyInterface<'a> {
     pub id: InterfaceId,
+    pub package: Option<PackageName<'a>>,
     pub name: &'a str,
 }
 
@@ -278,11 +285,25 @@ impl<'a> Summary<'a> {
         for (key, item) in items {
             match item {
                 WorldItem::Interface(id) => {
-                    let item_name = match key {
-                        wit_parser::WorldKey::Name(name) => name,
+                    let (package, item_name) = match key {
+                        wit_parser::WorldKey::Name(name) => (None, name),
                         wit_parser::WorldKey::Interface(id) => {
-                            match &self.resolve.interfaces[*id].name {
-                                Some(name) => name,
+                            let interface = &self.resolve.interfaces[*id];
+                            match &interface.name {
+                                Some(name) => {
+                                    if let Some(package) = interface.package {
+                                        let package_name = &self.resolve.packages[package].name;
+                                        (
+                                            Some(PackageName {
+                                                namespace: &package_name.namespace,
+                                                name: &package_name.name,
+                                            }),
+                                            name,
+                                        )
+                                    } else {
+                                        (None, name)
+                                    }
+                                }
                                 None => bail!("anonymous interfaces not yet supported"),
                             }
                         }
@@ -296,6 +317,7 @@ impl<'a> Summary<'a> {
                     for (func_name, func) in &interface.functions {
                         self.visit_function(
                             Some(MyInterface {
+                                package,
                                 name: item_name,
                                 id: *id,
                             }),

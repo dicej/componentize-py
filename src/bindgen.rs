@@ -118,9 +118,10 @@ pub static IMPORT_SIGNATURES: &[(&str, &[ValType], &[ValType])] = &[
         &[ValType::I32; 3],
         &[ValType::I32],
     ),
+    ("cabi_realloc", &[ValType::I32; 4], &[ValType::I32]),
 ];
 
-static IMPORTS: Lazy<HashMap<&str, u32>> = Lazy::new(|| {
+pub static IMPORTS: Lazy<HashMap<&str, u32>> = Lazy::new(|| {
     IMPORT_SIGNATURES
         .iter()
         .enumerate()
