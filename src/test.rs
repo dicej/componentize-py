@@ -1,4 +1,5 @@
 use {
+    crate::Ctx,
     anyhow::{anyhow, Result},
     async_trait::async_trait,
     once_cell::sync::Lazy,
@@ -12,7 +13,7 @@ use {
         component::{Component, InstancePre, Linker},
         Config, Engine, Store,
     },
-    wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView},
+    wasmtime_wasi::preview2::{Table, WasiCtxBuilder},
 };
 
 mod echoes;
@@ -40,7 +41,11 @@ static ENGINE: Lazy<Engine> = Lazy::new(|| {
     Engine::new(&config).unwrap()
 });
 
-async fn make_component(wit: &str, python: &str) -> Result<Vec<u8>> {
+async fn make_component(
+    wit: &str,
+    python: &str,
+    add_to_linker: &dyn Fn(&mut Linker<Ctx>) -> Result<()>,
+) -> Result<Vec<u8>> {
     let tempdir = tempfile::tempdir()?;
     fs::write(tempdir.path().join("app.wit"), wit)?;
     fs::write(tempdir.path().join("app.py"), python)?;
@@ -55,6 +60,7 @@ async fn make_component(wit: &str, python: &str) -> Result<Vec<u8>> {
         "app",
         false,
         &tempdir.path().join("app.wasm"),
+        add_to_linker,
     )
     .await?;
 
@@ -89,26 +95,6 @@ trait Host {
         -> Result<Self::World>;
 }
 
-struct Ctx {
-    wasi: WasiCtx,
-    table: Table,
-}
-
-impl WasiView for Ctx {
-    fn ctx(&self) -> &WasiCtx {
-        &self.wasi
-    }
-    fn ctx_mut(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
-    }
-    fn table(&self) -> &Table {
-        &self.table
-    }
-    fn table_mut(&mut self) -> &mut Table {
-        &mut self.table
-    }
-}
-
 struct Tester<H> {
     pre: InstancePre<Ctx>,
     seed: [u8; 32],
@@ -117,7 +103,8 @@ struct Tester<H> {
 
 impl<H: Host> Tester<H> {
     fn new(wit: &str, guest_code: &str, seed: [u8; 32]) -> Result<Self> {
-        let component = &Runtime::new()?.block_on(make_component(wit, guest_code))?;
+        let component =
+            &Runtime::new()?.block_on(make_component(wit, guest_code, &H::add_to_linker))?;
         let mut linker = Linker::<Ctx>::new(&ENGINE);
         H::add_to_linker(&mut linker)?;
         Ok(Self {

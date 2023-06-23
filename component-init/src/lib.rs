@@ -23,7 +23,7 @@ use {
 
 const PAGE_SIZE_BYTES: i32 = 64 * 1024;
 
-// TODO: this should ideally be 8 in order to minimize binary size, that but can result in larger numbers of data
+// TODO: this should ideally be 8 in order to minimize binary size, but that can result in larger numbers of data
 // segments than some tools and runtimes will tolerate.  We should probably start at 8 and increase as necessary if
 // the segment count is too high for a given component.
 const MAX_CONSECUTIVE_ZEROS: usize = 64;

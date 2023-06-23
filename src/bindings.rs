@@ -54,14 +54,24 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
         let offset = types.len();
         types.function(params, results);
         imports.import(
-            function
+            &function
                 .interface
-                .map(|i| i.name)
-                .unwrap_or(&resolve.worlds[world].name),
+                .map(|interface| {
+                    format!(
+                        "{}{}",
+                        if let Some(package) = interface.package {
+                            format!("{}:{}/", package.namespace, package.name)
+                        } else {
+                            String::new()
+                        },
+                        interface.name
+                    )
+                })
+                .unwrap_or(resolve.worlds[world].name.clone()),
             function.name,
             EntityType::Function(offset),
         );
-        function_names.push((offset, format!("{}-import", function.internal_name())));
+        function_names.push((offset, format!("{}-imported", function.internal_name())));
     }
 
     let import_function_count = imports.len();
@@ -182,14 +192,16 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
                             ""
                         },
                         if let Some(interface) = function.interface {
-                            if let Some(package) = interface.package {
-                                format!(
-                                    "{}:{}/{}#{}",
-                                    package.namespace, package.name, interface.name, function.name
-                                )
-                            } else {
-                                format!("{}#{}", interface.name, function.name)
-                            }
+                            format!(
+                                "{}{}#{}",
+                                if let Some(package) = interface.package {
+                                    format!("{}:{}/", package.namespace, package.name)
+                                } else {
+                                    String::new()
+                                },
+                                interface.name,
+                                function.name
+                            )
                         } else {
                             function.name.to_owned()
                         }

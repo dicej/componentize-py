@@ -64,11 +64,17 @@ impl<'a> MyFunction<'a> {
     pub fn internal_name(&self) -> String {
         if let Some(interface) = self.interface {
             format!(
-                "{}#{}{}",
+                "{}{}#{}{}",
+                if let Some(package) = interface.package {
+                    format!("{}:{}/", package.namespace, package.name)
+                } else {
+                    String::new()
+                },
                 interface.name,
                 self.name,
                 match self.kind {
-                    FunctionKind::Import | FunctionKind::Export => "",
+                    FunctionKind::Import => "-import",
+                    FunctionKind::Export => "-export",
                     FunctionKind::ExportLift => "-lift",
                     FunctionKind::ExportLower => "-lower",
                     FunctionKind::ExportPostReturn => "-post-return",

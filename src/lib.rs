@@ -60,7 +60,7 @@ const NATIVE_PATH_DELIMITER: char = ':';
 #[cfg(windows)]
 const NATIVE_PATH_DELIMITER: char = ';';
 
-struct Ctx {
+pub struct Ctx {
     wasi: WasiCtx,
     table: Table,
 }
@@ -157,6 +157,7 @@ pub async fn componentize(
     app_name: &str,
     stub_wasi: bool,
     output_path: &Path,
+    add_to_linker: &dyn Fn(&mut Linker<Ctx>) -> Result<()>,
 ) -> Result<()> {
     let stdlib = tempfile::tempdir()?;
 
@@ -299,6 +300,7 @@ pub async fn componentize(
 
     let mut linker = Linker::new(&engine);
     wasi::command::add_to_linker(&mut linker)?;
+    add_to_linker(&mut linker)?;
 
     let mut store = Store::new(&engine, Ctx { wasi, table });
 

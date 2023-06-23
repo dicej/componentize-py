@@ -28,6 +28,7 @@ class SimpleExport(exports.SimpleExport):
     def foo(v: int) -> int:
         return v + 3
 "#,
+        &|_| Ok(()),
     )
     .await?;
 
@@ -78,13 +79,14 @@ async fn simple_import_and_export() -> Result<()> {
     let component = &super::make_component(
         include_str!("wit/simple-import-and-export.wit"),
         r#"
-from simple_import_and_export import exports
-from simple_import_and_export.imports import imports
+from simple_import_and_export_test import exports
+from simple_import_and_export_test.imports import simple_import_and_export
 
-class Exports(exports.Exports):
+class SimpleImportAndExport(exports.SimpleImportAndExport):
     def foo(v: int) -> int:
-        return imports.foo(v) + 3
+        return simple_import_and_export.foo(v) + 3
 "#,
+        &|linker| componentize_py::test::simple_import_and_export::add_to_linker(linker, |ctx| ctx),
     )
     .await?;
 
