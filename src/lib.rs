@@ -25,7 +25,7 @@ use {
     },
     wasmtime_wasi::preview2::{
         pipe::{ReadPipe, WritePipe},
-        wasi, DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView,
+        DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView,
     },
     wit_parser::{Resolve, UnresolvedPackage, WorldId},
     zstd::Decoder,
@@ -299,7 +299,6 @@ pub async fn componentize(
     let engine = Engine::new(&config)?;
 
     let mut linker = Linker::new(&engine);
-    wasi::command::add_to_linker(&mut linker)?;
     add_to_linker(&mut linker)?;
 
     let mut store = Store::new(&engine, Ctx { wasi, table });

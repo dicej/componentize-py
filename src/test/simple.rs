@@ -28,7 +28,7 @@ class SimpleExport(exports.SimpleExport):
     def foo(v: int) -> int:
         return v + 3
 "#,
-        &|_| Ok(()),
+        &wasi::command::add_to_linker,
     )
     .await?;
 
@@ -86,7 +86,10 @@ class SimpleImportAndExport(exports.SimpleImportAndExport):
     def foo(v: int) -> int:
         return simple_import_and_export.foo(v) + 3
 "#,
-        &|linker| componentize_py::test::simple_import_and_export::add_to_linker(linker, |ctx| ctx),
+        &|linker| {
+            wasi::command::add_to_linker(linker)?;
+            componentize_py::test::simple_import_and_export::add_to_linker(linker, |ctx| ctx)
+        },
     )
     .await?;
 

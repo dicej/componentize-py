@@ -242,7 +242,13 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
     }
 
     exports.export(
-        "cabi_realloc",
+        "cabi_import_realloc",
+        ExportKind::Func,
+        *IMPORTS.get("cabi_realloc").unwrap(),
+    );
+
+    exports.export(
+        "cabi_export_realloc",
         ExportKind::Func,
         *IMPORTS.get("cabi_realloc").unwrap(),
     );

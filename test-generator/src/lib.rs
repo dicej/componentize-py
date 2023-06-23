@@ -743,7 +743,7 @@ pub fn generate() -> Result<()> {
             write!(
                 &mut guest_functions,
                 "    def echo{test_index}({params}):
-        return imports.echo{test_index}({params})
+        return echoes_generated.echo{test_index}({params})
 "
             )
             .unwrap();
@@ -952,7 +952,7 @@ impl super::Host for Host {{
     ) -> Result<Self::World> {{
         let instance = pre.instantiate_async(&mut *store).await?;
         let mut exports = instance.exports(&mut *store);
-        let mut instance = exports.instance("exports").unwrap();
+        let mut instance = exports.instance("componentize-py:test/echoes-generated").unwrap();
         Ok(Self::World {{
            {typed_function_inits}
         }})
@@ -960,10 +960,10 @@ impl super::Host for Host {{
 }}
 
 const GUEST_CODE: &str = r#"
-from echoes_generated import exports
-from echoes_generated.imports import imports
+from echoes_generated_test import exports
+from echoes_generated_test.imports import echoes_generated
 
-class Exports(exports.Exports):
+class EchoesGenerated(exports.EchoesGenerated):
 {guest_functions}
 "#;
 

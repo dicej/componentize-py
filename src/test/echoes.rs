@@ -208,105 +208,105 @@ impl super::Host for Host {
 }
 
 const GUEST_CODE: &str = r#"
-from echoes import exports
-from echoes.imports import imports
+from echoes_test import exports
+from echoes_test.imports import echoes
 
-class Exports(exports.Exports):
+class Echoes(exports.Echoes):
     def echo_nothing():
-        imports.echo_nothing()
+        echoes.echo_nothing()
 
     def echo_bool(v):
-        return imports.echo_bool(v)
+        return echoes.echo_bool(v)
 
     def echo_u8(v):
-        return imports.echo_u8(v)
+        return echoes.echo_u8(v)
 
     def echo_s8(v):
-        return imports.echo_s8(v)
+        return echoes.echo_s8(v)
 
     def echo_u16(v):
-        return imports.echo_u16(v)
+        return echoes.echo_u16(v)
 
     def echo_s16(v):
-        return imports.echo_s16(v)
+        return echoes.echo_s16(v)
 
     def echo_u32(v):
-        return imports.echo_u32(v)
+        return echoes.echo_u32(v)
 
     def echo_s32(v):
-        return imports.echo_s32(v)
+        return echoes.echo_s32(v)
 
     def echo_char(v):
-        return imports.echo_char(v)
+        return echoes.echo_char(v)
 
     def echo_u64(v):
-        return imports.echo_u64(v)
+        return echoes.echo_u64(v)
 
     def echo_s64(v):
-        return imports.echo_s64(v)
+        return echoes.echo_s64(v)
 
     def echo_float32(v):
-        return imports.echo_float32(v)
+        return echoes.echo_float32(v)
 
     def echo_float64(v):
-        return imports.echo_float64(v)
+        return echoes.echo_float64(v)
 
     def echo_string(v):
-        return imports.echo_string(v)
+        return echoes.echo_string(v)
 
     def echo_list_bool(v):
-        return imports.echo_list_bool(v)
+        return echoes.echo_list_bool(v)
 
     def echo_list_u8(v):
-        return imports.echo_list_u8(v)
+        return echoes.echo_list_u8(v)
 
     def echo_list_s8(v):
-        return imports.echo_list_s8(v)
+        return echoes.echo_list_s8(v)
 
     def echo_list_u16(v):
-        return imports.echo_list_u16(v)
+        return echoes.echo_list_u16(v)
 
     def echo_list_s16(v):
-        return imports.echo_list_s16(v)
+        return echoes.echo_list_s16(v)
 
     def echo_list_u32(v):
-        return imports.echo_list_u32(v)
+        return echoes.echo_list_u32(v)
 
     def echo_list_s32(v):
-        return imports.echo_list_s32(v)
+        return echoes.echo_list_s32(v)
 
     def echo_list_char(v):
-        return imports.echo_list_char(v)
+        return echoes.echo_list_char(v)
 
     def echo_list_u64(v):
-        return imports.echo_list_u64(v)
+        return echoes.echo_list_u64(v)
 
     def echo_list_s64(v):
-        return imports.echo_list_s64(v)
+        return echoes.echo_list_s64(v)
 
     def echo_list_float32(v):
-        return imports.echo_list_float32(v)
+        return echoes.echo_list_float32(v)
 
     def echo_list_float64(v):
-        return imports.echo_list_float64(v)
+        return echoes.echo_list_float64(v)
 
     def echo_list_string(v):
-        return imports.echo_list_string(v)
+        return echoes.echo_list_string(v)
 
     def echo_list_list_u8(v):
-        return imports.echo_list_list_u8(v)
+        return echoes.echo_list_list_u8(v)
 
     def echo_list_list_list_u8(v):
-        return imports.echo_list_list_list_u8(v)
+        return echoes.echo_list_list_list_u8(v)
 
     def echo_option_u8(v):
-        return imports.echo_option_u8(v)
+        return echoes.echo_option_u8(v)
 
     def echo_option_option_u8(v):
-        return imports.echo_option_option_u8(v)
+        return echoes.echo_option_option_u8(v)
 
     def echo_many(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16):
-        return imports.echo_many(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16)
+        return echoes.echo_many(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16)
 "#;
 
 static TESTER: Lazy<Tester<Host>> =
