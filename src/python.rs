@@ -23,6 +23,7 @@ fn python_componentize(
             app_name,
             stub_wasi,
             &output_path,
+            None,
         ))
     })()
     .map_err(|e| PyAssertionError::new_err(format!("{e:?}")))

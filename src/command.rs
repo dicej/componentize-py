@@ -115,7 +115,7 @@ fn componentize(common: Common, componentize: Componentize) -> Result<()> {
         &componentize.app_name,
         componentize.stub_wasi,
         &componentize.output,
-        &|_linker| todo!("add wasi and trapping stub functions to linker based on world imports"),
+        None,
     ))?;
 
     if !common.quiet {

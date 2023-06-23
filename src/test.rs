@@ -41,10 +41,11 @@ static ENGINE: Lazy<Engine> = Lazy::new(|| {
     Engine::new(&config).unwrap()
 });
 
+#[allow(clippy::type_complexity)]
 async fn make_component(
     wit: &str,
     python: &str,
-    add_to_linker: &dyn Fn(&mut Linker<Ctx>) -> Result<()>,
+    add_to_linker: Option<&dyn Fn(&mut Linker<Ctx>) -> Result<()>>,
 ) -> Result<Vec<u8>> {
     let tempdir = tempfile::tempdir()?;
     fs::write(tempdir.path().join("app.wit"), wit)?;
@@ -104,7 +105,7 @@ struct Tester<H> {
 impl<H: Host> Tester<H> {
     fn new(wit: &str, guest_code: &str, seed: [u8; 32]) -> Result<Self> {
         let component =
-            &Runtime::new()?.block_on(make_component(wit, guest_code, &H::add_to_linker))?;
+            &Runtime::new()?.block_on(make_component(wit, guest_code, Some(&H::add_to_linker)))?;
         let mut linker = Linker::<Ctx>::new(&ENGINE);
         H::add_to_linker(&mut linker)?;
         Ok(Self {

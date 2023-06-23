@@ -14,7 +14,7 @@ use {
         hash::{Hash, Hasher},
         io::Cursor,
         mem,
-        path::Path,
+        path::{Path, PathBuf},
         str,
     },
     summary::Summary,
@@ -25,9 +25,9 @@ use {
     },
     wasmtime_wasi::preview2::{
         pipe::{ReadPipe, WritePipe},
-        DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView,
+        wasi, DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView,
     },
-    wit_parser::{Resolve, UnresolvedPackage, WorldId},
+    wit_parser::{Resolve, UnresolvedPackage, WorldId, WorldItem, WorldKey},
     zstd::Decoder,
 };
 
@@ -41,6 +41,8 @@ mod summary;
 #[cfg(test)]
 mod test;
 mod util;
+
+static NATIVE_EXTENSION_SUFFIX: &str = ".cpython-311-wasm32-wasi.so";
 
 wasmtime::component::bindgen!({
     path: "wit/init.wit",
@@ -150,6 +152,7 @@ pub fn generate_bindings(wit_path: &Path, world: Option<&str>, output_dir: &Path
     summary.generate_code(output_dir)
 }
 
+#[allow(clippy::type_complexity)]
 pub async fn componentize(
     wit_path: &Path,
     world: Option<&str>,
@@ -157,7 +160,7 @@ pub async fn componentize(
     app_name: &str,
     stub_wasi: bool,
     output_path: &Path,
-    add_to_linker: &dyn Fn(&mut Linker<Ctx>) -> Result<()>,
+    add_to_linker: Option<&dyn Fn(&mut Linker<Ctx>) -> Result<()>>,
 ) -> Result<()> {
     let stdlib = tempfile::tempdir()?;
 
@@ -217,22 +220,32 @@ pub async fn componentize(
             "libcomponentize_py_bindings.so",
             &bindings::make_bindings(&resolve, world, &summary)?,
             false,
-        )?;
-
-    if stub_wasi {
-        linker = linker.library(
-            "libcomponentize_py_wasi_stub.so",
-            &bindings::make_wasi_stub_library(),
-            false,
-        )?;
-    } else {
-        linker = linker.adapter(
+        )?
+        .adapter(
             "wasi_snapshot_preview1",
             &zstd::decode_all(Cursor::new(include_bytes!(concat!(
                 env!("OUT_DIR"),
                 "/wasi_preview1_component_adapter.wasm.zst"
             ))))?,
         )?;
+
+    for (index, path) in python_path.split(NATIVE_PATH_DELIMITER).enumerate() {
+        let mut libraries = Vec::new();
+        find_native_extensions(Path::new(path), &mut libraries)?;
+        for library in libraries {
+            linker = linker.library(
+                &format!(
+                    "/{index}/{}",
+                    library
+                        .strip_prefix(path)
+                        .unwrap()
+                        .to_str()
+                        .context("non-UTF-8 path")?
+                ),
+                &fs::read(&library)?,
+                true,
+            )?
+        }
     }
 
     // todo: add `--dl-openable` options for any .cpython-311-wasm32-wasi.so files found in `python_path`
@@ -299,19 +312,24 @@ pub async fn componentize(
     let engine = Engine::new(&config)?;
 
     let mut linker = Linker::new(&engine);
-    add_to_linker(&mut linker)?;
+    let added_to_linker = if let Some(add_to_linker) = add_to_linker {
+        add_to_linker(&mut linker)?;
+        true
+    } else {
+        false
+    };
 
     let mut store = Store::new(&engine, Ctx { wasi, table });
 
     let app_name = app_name.to_owned();
     let component = component_init::initialize(&component, move |instrumented| {
         async move {
-            let (init, instance) = Init::instantiate_async(
-                &mut store,
-                &Component::new(&engine, instrumented)?,
-                &linker,
-            )
-            .await?;
+            let component = &Component::new(&engine, instrumented)?;
+            if !added_to_linker {
+                add_wasi_and_stubs(&resolve, world, component, &mut linker)?;
+            }
+
+            let (init, instance) = Init::instantiate_async(&mut store, component, &linker).await?;
 
             init.exports()
                 .call_init(&mut store, &app_name, &symbols)
@@ -331,6 +349,10 @@ pub async fn componentize(
         )
     })?;
 
+    if stub_wasi {
+        todo!("wrap component with wasi preview 2 stubs");
+    }
+
     fs::write(output_path, component)?;
 
     Ok(())
@@ -346,4 +368,74 @@ fn parse_wit(path: &Path, world: Option<&str>) -> Result<(Resolve, WorldId)> {
     };
     let world = resolve.select_world(pkg, world)?;
     Ok((resolve, world))
+}
+
+fn add_wasi_and_stubs(
+    resolve: &Resolve,
+    world: WorldId,
+    component: &Component,
+    linker: &mut Linker<Ctx>,
+) -> Result<()> {
+    wasi::command::add_to_linker(linker)?;
+
+    for (key, item) in &resolve.worlds[world].imports {
+        let interface_name = match key {
+            WorldKey::Name(name) => name.clone(),
+            WorldKey::Interface(interface) => {
+                let interface = &resolve.interfaces[*interface];
+                format!(
+                    "{}{}",
+                    if let Some(package) = interface.package {
+                        let package = &resolve.packages[package];
+                        format!("{}:{}/", package.name.namespace, package.name.name)
+                    } else {
+                        String::new()
+                    },
+                    interface.name.as_deref().unwrap()
+                )
+            }
+        };
+
+        match item {
+            WorldItem::Interface(interface) => {
+                let interface = &resolve.interfaces[*interface];
+                for function_name in interface.functions.keys() {
+                    linker
+                        .instance(&interface_name)?
+                        .func_new(component, function_name, {
+                            let interface_name = interface_name.clone();
+                            let function_name = function_name.clone();
+                            move |_, _, _| {
+                                Err(anyhow!(
+                                    "called trapping stub: {interface_name}#{function_name}"
+                                ))
+                            }
+                        })?;
+                }
+            }
+            WorldItem::Function(function) => {
+                linker.root().func_new(component, &function.name, {
+                    let function_name = function.name.clone();
+                    move |_, _, _| Err(anyhow!("called trapping stub: {function_name}"))
+                })?;
+            }
+            WorldItem::Type(_) => unreachable!(),
+        }
+    }
+
+    Ok(())
+}
+
+fn find_native_extensions(path: &Path, libraries: &mut Vec<PathBuf>) -> Result<()> {
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            find_native_extensions(&entry?.path(), libraries)?;
+        }
+    } else if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        if name.ends_with(NATIVE_EXTENSION_SUFFIX) {
+            libraries.push(path.to_owned());
+        }
+    }
+
+    Ok(())
 }

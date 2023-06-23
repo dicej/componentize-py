@@ -1,8 +1,8 @@
 use {
     crate::{
         bindgen::{
-            self, FunctionBindgen, DISPATCHABLE_CORE_PARAM_COUNT, DISPATCH_CORE_PARAM_COUNT,
-            IMPORTS, IMPORT_SIGNATURES,
+            FunctionBindgen, DISPATCHABLE_CORE_PARAM_COUNT, DISPATCH_CORE_PARAM_COUNT, IMPORTS,
+            IMPORT_SIGNATURES,
         },
         summary::{FunctionKind, Summary},
     },
@@ -346,77 +346,4 @@ pub fn make_bindings(resolve: &Resolve, world: WorldId, summary: &Summary) -> Re
     wasmparser::validate(&result)?;
 
     Ok(result)
-}
-
-fn make_wasi_stub_code(name: &str) -> Vec<Ins> {
-    // For most stubs, we trap, but we need specialized stubs for the functions called by `wasi-libc`'s
-    // __wasm_call_ctors; otherwise we'd trap immediately upon calling any export.
-    match name {
-        "clock_time_get" => vec![
-            // *time = 0;
-            Ins::LocalGet(2),
-            Ins::I64Const(0),
-            Ins::I64Store(bindgen::mem_arg(0, 3)),
-            // return ERRNO_SUCCESS;
-            Ins::I32Const(0),
-        ],
-        "environ_sizes_get" => vec![
-            // *environc = 0;
-            Ins::LocalGet(0),
-            Ins::I32Const(0),
-            Ins::I32Store(bindgen::mem_arg(0, 2)),
-            // *environ_buf_size = 0;
-            Ins::LocalGet(1),
-            Ins::I32Const(0),
-            Ins::I32Store(bindgen::mem_arg(0, 2)),
-            // return ERRNO_SUCCESS;
-            Ins::I32Const(0),
-        ],
-        "fd_prestat_get" => vec![
-            // return ERRNO_BADF;
-            Ins::I32Const(8),
-        ],
-        _ => vec![Ins::Unreachable],
-    }
-}
-
-pub fn make_wasi_stub_library() -> Vec<u8> {
-    // TODO: generate names custom section
-
-    let signatures = [
-        (
-            "args_get",
-            &[ValType::I32, ValType::I32] as &[_],
-            ValType::I32,
-        ),
-        ("arg_sizes_get", &[ValType::I32, ValType::I32], ValType::I32),
-    ];
-
-    let mut types = TypeSection::new();
-    let mut exports = ExportSection::new();
-    let mut functions = FunctionSection::new();
-    let mut code = CodeSection::new();
-    for (offset, (name, params, result)) in signatures.iter().enumerate() {
-        let offset = u32::try_from(offset).unwrap();
-        types.function(params.iter().copied(), [*result]);
-        functions.function(offset);
-        let mut function = Function::new([]);
-        for ins in make_wasi_stub_code(name) {
-            function.instruction(&ins);
-        }
-        function.instruction(&Ins::End);
-        code.function(&function);
-        exports.export(name, ExportKind::Func, offset);
-    }
-
-    let mut result = Module::new();
-
-    result.section(&types);
-    result.section(&functions);
-    result.section(&exports);
-    result.section(&code);
-
-    let result = result.finish();
-    wasmparser::validate(&result).expect("module should be valid");
-    result
 }

@@ -51,7 +51,7 @@ fn stubs_for_clippy(out_dir: &Path) -> Result<()> {
         "libc.so.zst",
         "libc++.so.zst",
         "libc++abi.so.zst",
-        "wasi_snapshot_preview1.wasm.zst",
+        "wasi_preview1_component_adapter.wasm.zst",
     ];
 
     for file in files {

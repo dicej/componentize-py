@@ -28,7 +28,7 @@ class SimpleExport(exports.SimpleExport):
     def foo(v: int) -> int:
         return v + 3
 "#,
-        &wasi::command::add_to_linker,
+        Some(&wasi::command::add_to_linker),
     )
     .await?;
 
@@ -63,6 +63,15 @@ class SimpleExport(exports.SimpleExport):
 
 #[tokio::test]
 async fn simple_import_and_export() -> Result<()> {
+    simple_import_and_export_0(true).await
+}
+
+#[tokio::test]
+async fn simple_import_and_export_stubbed() -> Result<()> {
+    simple_import_and_export_0(false).await
+}
+
+async fn simple_import_and_export_0(add_to_linker: bool) -> Result<()> {
     wasmtime::component::bindgen!({
         path: "src/test/wit",
         world: "simple-import-and-export-test",
@@ -86,9 +95,13 @@ class SimpleImportAndExport(exports.SimpleImportAndExport):
     def foo(v: int) -> int:
         return simple_import_and_export.foo(v) + 3
 "#,
-        &|linker| {
-            wasi::command::add_to_linker(linker)?;
-            componentize_py::test::simple_import_and_export::add_to_linker(linker, |ctx| ctx)
+        if add_to_linker {
+            Some(&|linker| {
+                wasi::command::add_to_linker(linker)?;
+                componentize_py::test::simple_import_and_export::add_to_linker(linker, |ctx| ctx)
+            })
+        } else {
+            None
         },
     )
     .await?;

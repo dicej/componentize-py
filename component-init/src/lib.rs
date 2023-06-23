@@ -51,6 +51,7 @@ pub fn mem_arg(offset: u64, align: u32) -> MemArg {
     }
 }
 
+#[allow(clippy::while_let_on_iterator)]
 pub async fn initialize(
     component: &[u8],
     initialize: impl FnOnce(Vec<u8>) -> BoxFuture<'static, Result<Box<dyn Invoker>>>,
