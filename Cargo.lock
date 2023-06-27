@@ -316,6 +316,7 @@ checksum = "8a2dd5a6fe8c6e3502f568a6353e5273bbb15193ad9a89e457b9970798efbea1"
 [[package]]
 name = "component-init"
 version = "0.1.0"
+source = "git+https://github.com/dicej/component-init#665e61b5a1adb8d1e73751d23a72cc849ed1666d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2026,6 +2027,7 @@ dependencies = [
 [[package]]
 name = "wasm-convert"
 version = "0.1.0"
+source = "git+https://github.com/dicej/wasm-convert#cd61fa7c3d1e35d0dc1700cdf5e4ade0f342c59b"
 dependencies = [
  "wasm-encoder 0.29.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasmparser 0.107.0 (registry+https://github.com/rust-lang/crates.io-index)",

@@ -28,7 +28,7 @@ wasmtime-wasi = { git = "https://github.com/dicej/wasmtime", branch = "linking" 
 wasi-common = { git = "https://github.com/dicej/wasmtime", branch = "linking" }
 wasmtime = { git = "https://github.com/dicej/wasmtime", branch = "linking", features = ["component-model"] }
 once_cell = "1.17.1"
-component-init = { path = "component-init" }
+component-init = { git = "https://github.com/dicej/component-init" }
 async-trait = "0.1.68"
 futures = "0.3.28"
 tokio = { version = "1.27.0", features = ["macros", "rt", "rt-multi-thread", "fs"] }
@@ -50,6 +50,4 @@ members = [
   "runtime",
   "shared",
   "test-generator",
-  "component-init",
-  "wasm-convert",
 ]

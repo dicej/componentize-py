@@ -1,8 +1,0 @@
-[package]
-name = "wasm-convert"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-wasm-encoder = "0.29.0"
-wasmparser = "0.107.0"
