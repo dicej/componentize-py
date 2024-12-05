@@ -48,6 +48,10 @@ jobs:
         shell: bash
         run: rustup component add rust-src --toolchain nightly
 
+      - name: Set default Rust toolchain to stable
+        shell: bash
+        run: rustup default stable
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "rust-cache-${{ hashFiles('./Cargo.lock') }}"
