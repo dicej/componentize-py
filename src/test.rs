@@ -38,6 +38,7 @@ static ENGINE: Lazy<Engine> = Lazy::new(|| {
     let mut config = Config::new();
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    config.wasm_component_model_map(true);
 
     Engine::new(&config).unwrap()
 });
@@ -88,6 +89,8 @@ async fn make_component(
     }
     .generate()
     .await?;
+
+    fs::copy(tempdir.path().join("app.wasm"), "/tmp/foo.wasm")?;
 
     Ok(fs::read(tempdir.path().join("app.wasm"))?)
 }
