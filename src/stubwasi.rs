@@ -17,7 +17,6 @@ pub fn link_stub_modules(libraries: Vec<Library>) -> Result<LinkedStubModules, E
     linker.use_built_in_libdl(true).encoder().validate(true);
 
     for Library {
-        target: _,
         name,
         module,
         dl_openable,

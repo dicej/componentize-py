@@ -39,10 +39,10 @@ const CLANG_EXECUTABLE: &str = "clang";
 // TODO: switch to upstream release per
 // https://github.com/bytecodealliance/componentize-py/issues/215
 const CPYTHON_SOURCE_TARBALL_URL: &str =
-    "https://github.com/dicej/cpython/tarball/v3.14.0-wasi-sdk-34";
-const CPYTHON_SOURCE_TARBALL_BASE_DIR: &str = "dicej-cpython-1cf1514";
+    "https://github.com/dicej/cpython/tarball/v3.14.0-wasi-sdk-34-v2";
+const CPYTHON_SOURCE_TARBALL_BASE_DIR: &str = "dicej-cpython-ff50203";
 
-const CPYTHON_BINARY_TARBALL_URL: &str = "https://github.com/dicej/cpython/releases/download/v3.14.0-wasi-sdk-34/cpython-wasi-v3.14.0-wasi-sdk-34.tar.zst";
+const CPYTHON_BINARY_TARBALL_URL: &str = "https://github.com/dicej/cpython/releases/download/v3.14.0-wasi-sdk-34-v2/cpython-v3.14.0-wasi-sdk-34-v2.tar.zst";
 
 static TARGETS: &[&str] = &["wasip2", "wasip3"];
 
@@ -72,20 +72,22 @@ fn stubs_for_clippy(out_dir: &Path) -> Result<()> {
         "libcomponentize_py_runtime.so.zst",
         "libpython3.14.so.zst",
         "libc.so.zst",
+        "threads/libc.so.zst",
         "libwasi-emulated-mman.so.zst",
         "libwasi-emulated-process-clocks.so.zst",
         "libwasi-emulated-getpid.so.zst",
         "libwasi-emulated-signal.so.zst",
         "libc++.so.zst",
         "libc++abi.so.zst",
+        "libunwind.so.zst",
     ];
 
     for file in libraries {
         for target in TARGETS {
             let target_dir = out_dir.join(target);
-            fs::create_dir_all(&target_dir)?;
 
             let path = target_dir.join(file);
+            fs::create_dir_all(path.parent().unwrap())?;
 
             if !path.exists() {
                 Encoder::new(File::create(path)?, ZSTD_COMPRESSION_LEVEL)?.do_finish()?;
@@ -138,14 +140,18 @@ fn find_wasi_sdk(out_dir: &Path) -> Result<PathBuf> {
             None => DEFAULT_SDK_VERSION.to_string(),
         };
         // same as the github release pipeline, allow overriding source repo
-        let source = env::var("WASI_SDK_SOURCE").unwrap_or("WebAssembly".to_string());
+        //
+        // TODO: switch back to upstream release once Wasm exceptions + shared
+        // library support has been merged and released.
+        let suffix = "-shared-library-exceptions";
+        let source = env::var("WASI_SDK_SOURCE").unwrap_or("dicej".to_string());
         // Wasi-sdk currently releases for x86_64 and arm64 linux, macos, and windows
         let (arch, os) = match (env::consts::ARCH, env::consts::OS) {
             pair @ ("x86_64", "linux" | "windows" | "macos") => pair,
             ("aarch64", os @ ("linux" | "windows" | "macos")) => ("arm64", os),
             _ => bail!("Unsupported platform for automatic wasi-sdk download: {} {}", env::consts::ARCH, env::consts::OS),
         };
-        Ok(format!("https://github.com/{source}/wasi-sdk/releases/download/wasi-sdk-{version}/wasi-sdk-{version}.0-{arch}-{os}.tar.gz"))
+        Ok(format!("https://github.com/{source}/wasi-sdk/releases/download/wasi-sdk-{version}{suffix}/wasi-sdk-{version}.0{suffix}-{arch}-{os}.tar.gz"))
     })?;
 
     // get the filename from the url
@@ -176,7 +182,7 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
 
     let wasi_sdk = find_wasi_sdk(out_dir)?;
 
-    for target in TARGETS {
+    for &target in TARGETS {
         maybe_make_cpython(target, &repo_dir, &wasi_sdk)?;
 
         let cpython_wasi_dir = repo_dir.join("cpython/builddir").join(target);
@@ -194,33 +200,39 @@ fn package_all_the_things(out_dir: &Path) -> Result<()> {
             &cpython_wasi_dir,
         )?;
 
+        let threads = if target == "wasip3" {
+            "experimental-coop-threads/"
+        } else {
+            ""
+        };
+
+        let default_dir = &format!("share/wasi-sysroot/lib/wasm32-{target}");
+        let exceptions_dir = &format!("share/wasi-sysroot/lib/wasm32-{target}/eh");
+        let threads_dir = &format!("share/wasi-sysroot/{threads}lib/wasm32-{target}");
+
         let libraries = [
-            "libc.so",
-            "libwasi-emulated-mman.so",
-            "libwasi-emulated-process-clocks.so",
-            "libwasi-emulated-getpid.so",
-            "libwasi-emulated-signal.so",
+            (default_dir, "libc.so"),
+            (default_dir, "libwasi-emulated-mman.so"),
+            (default_dir, "libwasi-emulated-process-clocks.so"),
+            (default_dir, "libwasi-emulated-getpid.so"),
+            (default_dir, "libwasi-emulated-signal.so"),
+            (exceptions_dir, "libc++.so"),
+            (exceptions_dir, "libc++abi.so"),
+            (exceptions_dir, "libunwind.so"),
         ];
 
-        for library in libraries {
-            compress(
-                &wasi_sdk.join(format!("share/wasi-sysroot/lib/wasm32-{target}")),
-                library,
-                &library_dir,
-                true,
-            )?;
+        for (dir, library) in libraries {
+            compress(&wasi_sdk.join(dir), library, &library_dir, true)?;
         }
 
-        let libraries = ["libc++.so", "libc++abi.so"];
-
-        for library in libraries {
-            compress(
-                &wasi_sdk.join(format!("share/wasi-sysroot/lib/wasm32-{target}/noeh")),
-                library,
-                &library_dir,
-                true,
-            )?;
-        }
+        let threads_library_dir = library_dir.join("threads");
+        fs::create_dir_all(&threads_library_dir)?;
+        compress(
+            &wasi_sdk.join(threads_dir),
+            "libc.so",
+            &threads_library_dir,
+            true,
+        )?;
 
         compress(&cpython_wasi_dir, "libpython3.14.so", &library_dir, true)?;
     }
