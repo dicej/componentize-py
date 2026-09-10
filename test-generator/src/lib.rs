@@ -1,7 +1,7 @@
 #![deny(warnings)]
 
 use {
-    anyhow::{anyhow, Result},
+    anyhow::{Result, anyhow},
     proptest::{
         strategy::{Just, Strategy, ValueTree},
         test_runner::{Config, TestRng, TestRunner},

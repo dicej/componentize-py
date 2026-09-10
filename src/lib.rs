@@ -11,12 +11,12 @@ use {
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
-        fs,
+        fmt, fs,
         io::Cursor,
         iter,
         ops::Deref,
         path::{Path, PathBuf},
-        str,
+        str::{self, FromStr},
     },
     summary::{Locations, Summary},
     tar::Archive,
@@ -76,16 +76,46 @@ impl WasiView for Ctx {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Multithreading {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target {
     Wasip2,
-    Wasip3,
+    Wasip3(Multithreading),
+}
+
+impl FromStr for Target {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        Ok(match s {
+            "wasm32-wasip2" => Target::Wasip2,
+            "wasm32-wasip3" => Target::Wasip3(Multithreading::Disabled),
+            "wasm32-wasip3-threads" => Target::Wasip3(Multithreading::Enabled),
+            _ => bail!(
+                "unrecognized target: `{s}`; \
+                 expected `wasm32-wasip2`, `wasm32-wasip3`, or `wasm32-wasip3-threads`"
+            ),
+        })
+    }
 }
 
 pub struct Library {
-    target: Target,
     name: String,
     module: Vec<u8>,
     dl_openable: bool,
+}
+
+impl fmt::Debug for Library {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Library")
+            .field("name", &self.name)
+            .field("dl_openable", &self.dl_openable)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -403,6 +433,7 @@ pub struct ComponentGenerator<'a> {
     pub import_interface_names: &'a HashMap<&'a str, &'a str>,
     pub export_interface_names: &'a HashMap<&'a str, &'a str>,
     pub intersect_world: Option<&'a str>,
+    pub target: Option<Target>,
 }
 
 impl ComponentGenerator<'_> {
@@ -445,8 +476,8 @@ impl ComponentGenerator<'_> {
         // generated code produced earlier.  Assuming this step succeeds, we'll
         // snapshot the result and emit the snapshot as the final output.
 
-        // Remove non-existent elements from `python_path` so we don't choke on them
-        // later:
+        // Remove non-existent elements from `python_path` so we don't choke on
+        // them later:
         let python_path = &self
             .python_path
             .iter()
@@ -673,37 +704,42 @@ impl ComponentGenerator<'_> {
         // Extract relevant metadata from the `Resolve` into a `Summary` instance,
         // which we'll use to generate Wasm- and Python-level bindings.
 
-        // Determine whether to use the WASIp2 or WASIp3 target based on whether
-        // the world uses any async features.
-        //
-        // TODO: Allow the user to explicitly specify the target instead of
-        // inferring it here, e.g. if they want to use WASIp3 despite the target
-        // world not using any async features.
-        //
-        // TODO #2: Creating a temporary `Summary` is a heavyweight way to
-        // determine whether the world uses async features, especially since we
-        // will create the real one down below, but otherwise we'd have an
-        // ordering problem because we need to know the target before we call
-        // `wit_dylib::create_with_metadata` (which produces the metadata we'll
-        // need to create the real `Summary`), and we can't call that until we
-        // know the target.  We should be able to extract the code that
-        // `Summary::try_new` uses to check for async features and use it
-        // without the rest of the things `Summary::try_new` does.
-        let need_async = Summary::try_new(
-            &resolve,
-            &iter::once(world).collect(),
-            &import_interface_names,
-            &export_interface_names,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-        )?
-        .need_async();
-
-        let target = if need_async {
-            Target::Wasip3
+        let target = if let Some(target) = self.target {
+            target
         } else {
-            Target::Wasip2
+            // Determine whether to use the WASIp2 or WASIp3 target based on
+            // whether the world uses any async features.
+            //
+            // TODO: Creating a temporary `Summary` is a heavyweight way to
+            // determine whether the world uses async features, especially since
+            // we will create the real one down below, but otherwise we'd have
+            // an ordering problem because we need to know the target before we
+            // call `wit_dylib::create_with_metadata` (which produces the
+            // metadata we'll need to create the real `Summary`), and we can't
+            // call that until we know the target.  We should be able to extract
+            // the code that `Summary::try_new` uses to check for async features
+            // and use it without the rest of the things `Summary::try_new`
+            // does.
+            //
+            // Note that `componentize-go` has a reasonably succinct check for
+            // whether a world uses async features which we could move to
+            // `wit_component` and reuse from there.
+            let need_async = Summary::try_new(
+                &resolve,
+                &iter::once(world).collect(),
+                &import_interface_names,
+                &export_interface_names,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            )?
+            .need_async();
+
+            if need_async {
+                Target::Wasip3(Multithreading::Disabled)
+            } else {
+                Target::Wasip2
+            }
         };
 
         let (mut bindings, metadata) = wit_dylib::create_with_metadata(
@@ -714,7 +750,7 @@ impl ComponentGenerator<'_> {
                 async_: Default::default(),
                 stack_pointer: match target {
                     Target::Wasip2 => wit_dylib::StackPointer::Global,
-                    Target::Wasip3 => wit_dylib::StackPointer::TaskContext,
+                    Target::Wasip3(_) => wit_dylib::StackPointer::TaskContext,
                 },
             }),
         );
@@ -729,6 +765,24 @@ impl ComponentGenerator<'_> {
             )?),
         }
         .append_to(&mut bindings);
+
+        // Now that we know which target to use, add the bundled libraries for
+        // that target, as well as the bindings `wit-dylib` just generated.
+        //
+        // Note that we simply assume any libraries previously discovered in the
+        // Python search path are appropriate for the current target; if they
+        // aren't (i.e. if they use the `wasm32-wasip2` ABI when the
+        // `wasm32-wasip3` ABI was expected, or vice-versa), then stuff will
+        // break when we try to link, validate, or run the component.
+        let libraries = prelink::bundled_libraries(target)?
+            .into_iter()
+            .chain(libraries)
+            .chain(Some(Library {
+                name: "libcomponentize_py_bindings.so".into(),
+                module: bindings,
+                dl_openable: false,
+            }))
+            .collect::<Vec<_>>();
 
         let imported_function_indexes = metadata
             .import_funcs
@@ -780,23 +834,6 @@ impl ComponentGenerator<'_> {
             &exported_function_indexes,
             &stream_and_future_indexes,
         )?;
-
-        // Now that we know which target to use, update `libraries` accordingly.
-        //
-        // Note that we must only use libraries which match the target because
-        // the targets have mutually incompatible ABIs, plus users may wish to
-        // target runtimes which do not support WASIp3 or async features.
-        let mut libraries = libraries
-            .into_iter()
-            .filter(|library| library.target == target)
-            .collect::<Vec<_>>();
-
-        libraries.push(Library {
-            target,
-            name: "libcomponentize_py_bindings.so".into(),
-            module: bindings,
-            dl_openable: false,
-        });
 
         let component = link::link_libraries(&libraries)?;
 
@@ -950,6 +987,7 @@ impl ComponentGenerator<'_> {
         config.wasm_component_model(true);
         config.wasm_component_model_async(true);
         config.wasm_component_model_map(true);
+        config.wasm_component_model_threading(true);
 
         let engine = Engine::new(&config)?;
 
