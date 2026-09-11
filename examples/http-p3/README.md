@@ -11,7 +11,7 @@ run a Python-based component targetting version `0.3.0` of the [wasi-http]
 ## Prerequisites
 
 * `Wasmtime` 46.0.0
-* `componentize-py` 0.25.0
+* `componentize-py` 0.25.1
 
 Below, we use [Rust](https://rustup.rs/)'s `cargo` to install `Wasmtime`.  If
 you don't have `cargo`, you can download and install from
@@ -19,7 +19,7 @@ https://github.com/bytecodealliance/wasmtime/releases/tag/v46.0.0.
 
 ```
 cargo install --version 46.0.0 wasmtime-cli
-pip install componentize-py==0.25.0
+pip install componentize-py==0.25.1
 ```
 
 ## Running the demo

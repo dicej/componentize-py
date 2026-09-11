@@ -79,13 +79,13 @@ reqwest = { version = "0.12.15", default-features = false, features = [
 ] }
 tar = "0.4.41"
 zstd = "0.13.2"
-componentize-py-test-generator = { path = "test-generator", version = "0.25.0" }
+componentize-py-test-generator = { path = "test-generator", version = "0.25.1" }
 flate2 = "1.1.1"
 wasmparser = "0.245.0"
 wasm-encoder = "0.245.0"
 
 [workspace]
-package.version = "0.25.0"
+package.version = "0.25.1"
 package.edition = "2024"
 package.license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
 package.repository = "https://github.com/bytecodealliance/componentize-py"
