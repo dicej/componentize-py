@@ -15,6 +15,7 @@ from tests.imports import simple_async_import_and_export
 from tests.imports import host_thing_interface
 from tests.exports import resource_alias2
 from tests.exports import streams_and_futures
+from tests.exports import similar_streams_and_futures
 from typing import Tuple, List, Optional
 from foo_sdk.wit import exports as foo_exports
 from foo_sdk.wit.imports.foo_interface import test as foo_test
@@ -249,3 +250,10 @@ class FooInterface(foo_exports.FooInterface):
 class BarSdkBarInterface(bar_exports.BarSdkBarInterface):
     def test(self, s: str) -> str:
         return bar_test(f"{s} BarInterface.test")
+
+class SimilarStreamsAndFutures(exports.SimilarStreamsAndFutures):
+    async def baz(self) -> tuple[StreamReader[similar_streams_and_futures.Foo], StreamReader[similar_streams_and_futures.Bar], FutureReader[similar_streams_and_futures.Foo], FutureReader[similar_streams_and_futures.Bar]]:
+        return (tests.similar_streams_and_futures_foo_stream()[1],
+                tests.similar_streams_and_futures_bar_stream()[1],
+                tests.similar_streams_and_futures_foo_future(lambda: similar_streams_and_futures.Foo_A())[1],
+                tests.similar_streams_and_futures_bar_future(lambda: similar_streams_and_futures.Bar_A())[1])
